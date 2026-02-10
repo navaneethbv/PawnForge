@@ -84,8 +84,8 @@ function updateEvalBar(evalCp) {
   const whitePct = 0.5 + (clamped / 1000) * 0.5;
   const blackPct = 1 - whitePct;
 
-  el.evalBarSegTop.style.transform = `scaleY(${blackPct.toFixed(4)})`;
-  el.evalBarSegBot.style.transform = `scaleY(${whitePct.toFixed(4)})`;
+  el.evalBarSegTop.style.transform = `translateZ(0) scaleY(${blackPct.toFixed(4)})`;
+  el.evalBarSegBot.style.transform = `translateZ(0) scaleY(${whitePct.toFixed(4)})`;
 
   const isMate = Math.abs(evalCp) >= 100000;
   const display = isMate

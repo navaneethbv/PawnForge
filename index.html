@@ -4,51 +4,66 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>PawnForge</title>
-    <link rel="stylesheet" href="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css" integrity="sha384-q94+BZz+4fV+V6fP5A2nT9jM6m6wG2z2itV6Qn8q6I4J2Q0f3J0h3mzt8V+f5r4x" crossorigin="anonymous">
+    <link rel="stylesheet" href="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css" crossorigin="anonymous">
     <link rel="stylesheet" href="/src/styles.css" />
   </head>
   <body>
     <div id="app">
       <header class="topbar">
         <h1>♟️ PawnForge</h1>
-        <p>Modern chess analysis + training in one workspace</p>
+        <p>Full-stack chess analysis with Stockfish API, PGN review, opening insights, and all-legal-moves explorer.</p>
       </header>
 
       <main class="layout">
         <section class="panel board-panel">
           <div id="board"></div>
           <div class="board-controls">
-            <button id="flipBtn">Flip Board</button>
-            <button id="resetBtn">Reset Position</button>
-            <button id="copyFenBtn">Copy FEN</button>
+            <button id="flipBtn">Flip</button>
+            <button id="resetBtn">Reset</button>
           </div>
+
+          <label for="fenInput">FEN</label>
+          <textarea id="fenInput" rows="2"></textarea>
+          <button id="loadFenBtn">Load FEN</button>
+
+          <h3>Move List</h3>
+          <ol id="moveList"></ol>
         </section>
 
         <section class="panel analysis-panel">
-          <h2>Engine Analysis</h2>
-          <div class="analysis-controls">
-            <label for="depthSelect">Depth</label>
-            <select id="depthSelect">
-              <option value="10">10</option>
-              <option value="12" selected>12</option>
-              <option value="15">15</option>
-            </select>
-            <button id="analyzeBtn">Analyze</button>
+          <div class="inline-controls">
+            <label>Depth
+              <select id="depthSelect"><option>10</option><option selected>12</option><option>15</option></select>
+            </label>
+            <label>Move time (ms)
+              <select id="movetimeSelect"><option>80</option><option selected>120</option><option>250</option></select>
+            </label>
           </div>
-          <p id="engineStatus">Engine idle.</p>
-          <pre id="engineOutput">No analysis yet.</pre>
 
-          <h2>Training</h2>
-          <div class="analysis-controls">
-            <button id="newPuzzleBtn">New Puzzle</button>
-            <button id="showHintBtn">Show Hint</button>
-          </div>
-          <p id="puzzleInfo">Click “New Puzzle” to begin.</p>
+          <h2>Position Analysis</h2>
+          <button id="analyzePositionBtn">Analyze Position</button>
+          <pre id="positionOutput">No analysis yet.</pre>
+
+          <h2>Evaluate Every Legal Move</h2>
+          <button id="analyzeAllMovesBtn">Run All-Moves Explorer</button>
+          <label>Filter by from-square file (a-h)
+            <select id="filterPiece"><option value="">All</option><option>a</option><option>b</option><option>c</option><option>d</option><option>e</option><option>f</option><option>g</option><option>h</option></select>
+          </label>
+          <div id="pieceBadges" class="badge-wrap"></div>
+          <pre id="pieceMoves">Click a piece badge to inspect per-piece legal moves.</pre>
+          <pre id="allMovesOutput">Run explorer to stream per-move results.</pre>
+
+          <h2>Opening Discovery</h2>
+          <button id="openingBtn">Detect Opening</button>
+          <pre id="openingOutput">No opening detected yet.</pre>
         </section>
 
-        <section class="panel moves-panel">
-          <h2>Move List</h2>
-          <ol id="moveList"></ol>
+        <section class="panel game-panel">
+          <h2>PGN Game Review</h2>
+          <textarea id="pgnInput" rows="12" placeholder="Paste PGN here..."></textarea>
+          <button id="analyzeGameBtn">Analyze Game</button>
+          <pre id="gameOutput">No game report yet.</pre>
+          <p id="engineStatus">Engine status: idle.</p>
         </section>
       </main>
     </div>

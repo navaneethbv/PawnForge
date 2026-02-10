@@ -1,9 +1,11 @@
 {
   "name": "pawnforge",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "private": true,
-  "description": "PawnForge — modern chess analysis and training platform",
+  "type": "module",
+  "description": "PawnForge full-stack chess analysis web app",
   "scripts": {
-    "serve": "python3 -m http.server 4173"
+    "serve": "node server.js",
+    "start": "node server.js"
   }
 }

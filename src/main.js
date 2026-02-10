@@ -1,46 +1,37 @@
 import { Chess } from 'https://cdn.jsdelivr.net/npm/chess.js@1.1.0/+esm';
 
 const game = new Chess();
-let board = null;
-let puzzle = null;
-let puzzleStep = 0;
+let board;
+let allMovesResult = [];
 
-const engineStatus = document.getElementById('engineStatus');
-const engineOutput = document.getElementById('engineOutput');
-const moveListEl = document.getElementById('moveList');
-const puzzleInfo = document.getElementById('puzzleInfo');
-
-const puzzles = [
-  {
-    title: 'Mate in 1',
-    fen: '6k1/5ppp/8/8/8/8/6PP/6KQ w - - 0 1',
-    solution: ['Qh8#'],
-    hint: 'Look for a forcing queen move on the back rank.'
-  },
-  {
-    title: 'Win the queen',
-    fen: 'r1bqkbnr/pppp1ppp/2n5/4p3/3PP3/5N2/PPP2PPP/RNBQKB1R b KQkq - 0 3',
-    solution: ['Nxd4'],
-    hint: 'A central capture wins material by tactic.'
-  }
-];
+const el = {
+  fenInput: document.getElementById('fenInput'),
+  pgnInput: document.getElementById('pgnInput'),
+  moveList: document.getElementById('moveList'),
+  status: document.getElementById('engineStatus'),
+  positionOutput: document.getElementById('positionOutput'),
+  allMovesOutput: document.getElementById('allMovesOutput'),
+  gameOutput: document.getElementById('gameOutput'),
+  openingOutput: document.getElementById('openingOutput'),
+  pieceBadges: document.getElementById('pieceBadges'),
+  pieceMoves: document.getElementById('pieceMoves'),
+  filterPiece: document.getElementById('filterPiece')
+};
 
 function renderMoves() {
-  const history = game.history({ verbose: true });
-  moveListEl.innerHTML = '';
-  history.forEach((m, i) => {
+  el.moveList.innerHTML = '';
+  game.history({ verbose: true }).forEach((move, i) => {
     const li = document.createElement('li');
-    li.textContent = `${Math.floor(i / 2) + 1}${i % 2 === 0 ? '. ' : '... '}${m.san}`;
-    moveListEl.appendChild(li);
+    li.textContent = `${Math.floor(i / 2) + 1}${i % 2 === 0 ? '. ' : '... '}${move.san}`;
+    el.moveList.appendChild(li);
   });
+  el.fenInput.value = game.fen();
 }
 
 function onDrop(source, target) {
   const move = game.move({ from: source, to: target, promotion: 'q' });
   if (!move) return 'snapback';
-
   renderMoves();
-  validatePuzzleMove(move.san);
   return undefined;
 }
 
@@ -48,128 +39,177 @@ function onSnapEnd() {
   board.position(game.fen());
 }
 
-function setupBoard() {
-  board = window.Chessboard('board', {
-    draggable: true,
-    position: 'start',
-    onDrop,
-    onSnapEnd
+async function postJson(url, body) {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Request failed');
+  return json;
+}
+
+async function analyzePosition() {
+  try {
+    const data = await postJson('/api/analyze/position', {
+      fen: game.fen(),
+      settings: { depth: Number(document.getElementById('depthSelect').value), multiPv: 5 }
+    });
+
+    el.positionOutput.textContent = data.topMoves
+      .map((m, i) => `${i + 1}. ${m.uci}  eval ${(m.evalCp / 100).toFixed(2)}\n   pv: ${m.pv}`)
+      .join('\n\n');
+    el.status.textContent = `Position analysis complete (${data.source || 'stockfish'}).`;
+  } catch (error) {
+    el.positionOutput.textContent = `Error: ${error.message}`;
+  }
+}
+
+function renderAllMoves(moves) {
+  const filterPiece = el.filterPiece.value;
+  const filtered = filterPiece ? moves.filter((m) => m.uci.startsWith(filterPiece)) : moves;
+  const rows = filtered.map((m, idx) => `${idx + 1}. ${m.uci} eval ${(m.evalCp / 100).toFixed(2)} Δ${(m.deltaCp / 100).toFixed(2)} ${m.category.label}`);
+  el.allMovesOutput.textContent = rows.join('\n');
+
+  const bestByPiece = new Map();
+  moves.forEach((m) => {
+    const piece = m.uci[0];
+    if (!bestByPiece.has(piece)) bestByPiece.set(piece, m);
+  });
+
+  el.pieceBadges.innerHTML = '';
+  [...bestByPiece.entries()].forEach(([piece, move]) => {
+    const btn = document.createElement('button');
+    btn.className = `badge ${move.category.key}`;
+    btn.textContent = `${piece.toUpperCase()}: ${move.uci} (${move.category.label})`;
+    btn.addEventListener('click', () => {
+      const perPiece = moves.filter((m) => m.uci.startsWith(piece));
+      el.pieceMoves.textContent = perPiece.map((m) => `${m.uci}  ${(m.evalCp / 100).toFixed(2)}  ${m.category.label}`).join('\n');
+    });
+    el.pieceBadges.appendChild(btn);
   });
 }
 
-function analyzePosition() {
-  const depth = Number(document.getElementById('depthSelect').value);
-  const legal = game.moves({ verbose: true });
+function runAllMoves() {
+  el.allMovesOutput.textContent = 'Starting streaming analysis...';
+  const es = new EventSourcePolyfill('/api/analyze/all-moves', {
+    payload: JSON.stringify({ fen: game.fen(), settings: { movetimeMs: Number(document.getElementById('movetimeSelect').value) } })
+  });
 
-  if (legal.length === 0) {
-    engineStatus.textContent = 'No legal moves in this position.';
-    engineOutput.textContent = game.isCheckmate()
-      ? 'Checkmate on board.'
-      : 'Stalemate or draw state.';
-    return;
-  }
-
-  const scoring = legal
-    .map((m) => {
-      game.move(m);
-      const score = staticEval(game);
-      game.undo();
-      return { san: m.san, from: m.from, to: m.to, score };
-    })
-    .sort((a, b) => (game.turn() === 'w' ? b.score - a.score : a.score - b.score));
-
-  const top = scoring.slice(0, 3);
-  const lines = top.map((m, i) => `${i + 1}. ${m.san} (${m.from}-${m.to}) eval ${m.score > 0 ? '+' : ''}${m.score.toFixed(2)}`);
-
-  engineStatus.textContent = `Analyzed ${legal.length} legal moves at depth ${depth} (fast static evaluator).`;
-  engineOutput.textContent = lines.join('\n');
-}
-
-function staticEval(chess) {
-  const values = { p: 1, n: 3.1, b: 3.3, r: 5, q: 9, k: 0 };
-  let score = 0;
-  for (const row of chess.board()) {
-    for (const piece of row) {
-      if (!piece) continue;
-      const value = values[piece.type] ?? 0;
-      score += piece.color === 'w' ? value : -value;
+  const partial = [];
+  es.onmessage = (event) => {
+    const data = JSON.parse(event.data);
+    if (data.type === 'partial') {
+      partial.push(data.row);
+      el.allMovesOutput.textContent = `Streaming... ${Math.round(data.progress * 100)}%\n` + partial.slice(-8).map((m) => `${m.uci} ${(m.evalCp / 100).toFixed(2)}`).join('\n');
     }
-  }
 
-  const mobility = chess.moves().length * 0.02;
-  score += chess.turn() === 'w' ? mobility : -mobility;
-
-  if (chess.isCheckmate()) {
-    score += chess.turn() === 'w' ? -999 : 999;
-  }
-  return score;
-}
-
-function loadPuzzle() {
-  puzzle = puzzles[Math.floor(Math.random() * puzzles.length)];
-  puzzleStep = 0;
-  game.load(puzzle.fen);
-  board.position(game.fen());
-  renderMoves();
-  puzzleInfo.textContent = `Puzzle: ${puzzle.title}. Find the best move.`;
-  puzzleInfo.classList.remove('good');
-}
-
-function validatePuzzleMove(san) {
-  if (!puzzle) return;
-
-  const expected = puzzle.solution[puzzleStep];
-  if (san === expected) {
-    puzzleStep += 1;
-    if (puzzleStep === puzzle.solution.length) {
-      puzzleInfo.textContent = `✅ Correct! Solved: ${puzzle.title}`;
-      puzzleInfo.classList.add('good');
-      puzzle = null;
-    } else {
-      puzzleInfo.textContent = 'Good move. Continue the sequence.';
-      puzzleInfo.classList.add('good');
+    if (data.type === 'final') {
+      allMovesResult = data.result.moves;
+      renderAllMoves(allMovesResult);
+      es.close();
     }
-  } else {
-    puzzleInfo.textContent = `Not the puzzle move. Try again.`;
-    puzzleInfo.classList.remove('good');
+  };
+
+  es.onerror = () => {
+    el.allMovesOutput.textContent = 'Streaming failed. Ensure Stockfish is available.';
+    es.close();
+  };
+}
+
+async function analyzeGame() {
+  try {
+    const replay = new Chess();
+    replay.loadPgn(el.pgnInput.value, { strict: false });
+    const hist = replay.history({ verbose: true });
+
+    const fenSequence = [];
+    const cursor = new Chess();
+    hist.forEach((mv) => {
+      cursor.move(mv);
+      fenSequence.push(cursor.fen());
+    });
+
+    const data = await postJson('/api/analyze/game', {
+      pgn: el.pgnInput.value,
+      fenSequence,
+      settings: { depth: Number(document.getElementById('depthSelect').value) }
+    });
+
+    el.gameOutput.textContent = `Opening: ${data.opening.eco} ${data.opening.name}\nPly: ${data.plyCount}\n\n` +
+      data.plies.slice(0, 40).map((p) => `${p.ply}. ${p.san} eval ${(p.evalCp / 100).toFixed(2)} ${p.category.label}`).join('\n');
+  } catch (error) {
+    el.gameOutput.textContent = `Error: ${error.message}`;
   }
+}
+
+async function detectOpening() {
+  const query = encodeURIComponent(game.history().join(' '));
+  const res = await fetch(`/api/opening?moves=${query}`);
+  const data = await res.json();
+  el.openingOutput.textContent = `${data.eco} ${data.name}\nBook window: ${data.bookPlyRange[0]}-${data.bookPlyRange[1]}`;
 }
 
 function bindUI() {
   document.getElementById('flipBtn').addEventListener('click', () => board.flip());
-
   document.getElementById('resetBtn').addEventListener('click', () => {
     game.reset();
     board.start();
     renderMoves();
-    puzzle = null;
-    puzzleInfo.textContent = 'Board reset. Click “New Puzzle” to train.';
-    puzzleInfo.classList.remove('good');
   });
-
-  document.getElementById('copyFenBtn').addEventListener('click', async () => {
-    const fen = game.fen();
-    try {
-      await navigator.clipboard.writeText(fen);
-      engineStatus.textContent = 'FEN copied to clipboard.';
-    } catch {
-      engineStatus.textContent = `FEN: ${fen}`;
-    }
+  document.getElementById('loadFenBtn').addEventListener('click', () => {
+    if (!game.load(el.fenInput.value.trim())) return;
+    board.position(game.fen());
+    renderMoves();
   });
-
-  document.getElementById('analyzeBtn').addEventListener('click', analyzePosition);
-
-  document.getElementById('newPuzzleBtn').addEventListener('click', loadPuzzle);
-
-  document.getElementById('showHintBtn').addEventListener('click', () => {
-    if (!puzzle) {
-      puzzleInfo.textContent = 'No active puzzle. Click “New Puzzle”.';
-      return;
-    }
-    puzzleInfo.textContent = `Hint: ${puzzle.hint}`;
-  });
+  document.getElementById('analyzePositionBtn').addEventListener('click', analyzePosition);
+  document.getElementById('analyzeAllMovesBtn').addEventListener('click', runAllMoves);
+  document.getElementById('analyzeGameBtn').addEventListener('click', analyzeGame);
+  document.getElementById('openingBtn').addEventListener('click', detectOpening);
+  el.filterPiece.addEventListener('change', () => renderAllMoves(allMovesResult));
 }
 
-setupBoard();
+class EventSourcePolyfill {
+  constructor(url, { payload }) {
+    this.ctrl = new AbortController();
+    this.onmessage = null;
+    this.onerror = null;
+    fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: payload,
+      signal: this.ctrl.signal
+    }).then(async (res) => {
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const chunks = buf.split('\n\n');
+        buf = chunks.pop();
+        chunks.forEach((chunk) => {
+          const line = chunk.split('\n').find((l) => l.startsWith('data: '));
+          if (line && this.onmessage) this.onmessage({ data: line.slice(6) });
+        });
+      }
+    }).catch(() => this.onerror && this.onerror());
+  }
+
+  close() {
+    this.ctrl.abort();
+  }
+}
+
+board = window.Chessboard('board', {
+  draggable: true,
+  position: 'start',
+  pieceTheme: 'https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/www/img/chesspieces/wikipedia/{piece}.png',
+  onDrop,
+  onSnapEnd
+});
+
 bindUI();
 renderMoves();

@@ -7,7 +7,8 @@ import { spawn, spawnSync } from 'node:child_process';
 const PORT = Number(process.env.PORT || 4173);
 const ROOT = process.cwd();
 const STOCKFISH_BIN = process.env.STOCKFISH_BIN || (existsSync('/usr/games/stockfish') ? '/usr/games/stockfish' : 'stockfish');
-const ENGINE_AVAILABLE = spawnSync(STOCKFISH_BIN, ['-h'], { stdio: 'ignore' }).status !== null;
+const ENGINE_CHECK = spawnSync(STOCKFISH_BIN, ['-h'], { stdio: 'ignore' });
+const ENGINE_AVAILABLE = ENGINE_CHECK.status === 0 && !ENGINE_CHECK.error;
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -83,17 +84,41 @@ class EngineWorker {
   }
 
   async waitFor(predicate, timeoutMs = 4000) {
-    const start = Date.now();
-    while (Date.now() - start < timeoutMs) {
+    const deadline = Date.now() + timeoutMs;
+    // Keep checking for a matching line until we either find one or hit the timeout.
+    // Each wait for new data is raced against the remaining timeout to avoid hanging indefinitely.
+    // Any waiter registered for this call is removed on timeout to avoid leaks.
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
       const idx = this.lines.findIndex(predicate);
       if (idx !== -1) {
         const matched = this.lines[idx];
         this.lines = this.lines.slice(idx + 1);
         return matched;
       }
-      await new Promise((resolve) => this.waiters.push(resolve));
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) {
+        throw new Error('Engine timeout');
+      }
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          const i = this.waiters.indexOf(waiter);
+          if (i !== -1) {
+            this.waiters.splice(i, 1);
+          }
+          reject(new Error('Engine timeout'));
+        }, remaining);
+        const waiter = () => {
+          clearTimeout(timer);
+          const i = this.waiters.indexOf(waiter);
+          if (i !== -1) {
+            this.waiters.splice(i, 1);
+          }
+          resolve();
+        };
+        this.waiters.push(waiter);
+      });
     }
-    throw new Error('Engine timeout');
   }
 
   async ensureReady() {
@@ -308,11 +333,19 @@ function serveStatic(req, res) {
   const normalized = normalize(reqPath).replace(/^\.+(\/|\\)/, '');
   const filePath = join(ROOT, normalized);
   const ext = extname(filePath);
-  res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream' });
-  createReadStream(filePath).on('error', () => {
-    res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+  const stream = createReadStream(filePath);
+
+  stream.on('open', () => {
+    res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream' });
+    stream.pipe(res);
+  });
+
+  stream.on('error', () => {
+    if (!res.headersSent) {
+      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+    }
     res.end('Not found');
-  }).pipe(res);
+  });
 }
 
 http.createServer((req, res) => {

@@ -181,26 +181,58 @@ class EventSourcePolyfill {
       body: payload,
       signal: this.ctrl.signal
     }).then(async (res) => {
-      if (!res.ok) {
-        const errorData = await res.json().catch(() => ({ status: res.status, statusText: res.statusText }));
-        if (this.onerror) this.onerror(errorData);
-        return;
+      try {
+        // Check HTTP status
+        if (!res.ok) {
+          let message = '';
+          try {
+            message = await res.text();
+          } catch (e) {
+            // Ignore body read errors and fall back to status message
+          }
+          const errorMessage = message || ('Request failed with status ' + res.status);
+          if (this.onerror) this.onerror(new Error(errorMessage));
+          return;
+        }
+
+        // Check content type for SSE
+        const contentType = (res.headers && res.headers.get && res.headers.get('content-type')) || '';
+        if (contentType.indexOf('text/event-stream') === -1) {
+          let message = '';
+          try {
+            message = await res.text();
+          } catch (e) {
+            // Ignore body read errors and fall back to generic message
+          }
+          const errorMessage = message || 'Expected SSE (text/event-stream) but received: ' + contentType;
+          if (this.onerror) this.onerror(new Error(errorMessage));
+          return;
+        }
+
+        // Ensure response body is present
+        if (!res.body) {
+          if (this.onerror) this.onerror(new Error('Response body is not readable.'));
+          return;
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = '';
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const chunks = buf.split('\n\n');
+          buf = chunks.pop();
+          chunks.forEach((chunk) => {
+            const line = chunk.split('\n').find((l) => l.startsWith('data: '));
+            if (line && this.onmessage) this.onmessage({ data: line.slice(6) });
+          });
+        }
+      } catch (err) {
+        if (this.onerror) this.onerror(err);
       }
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buf = '';
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        const chunks = buf.split('\n\n');
-        buf = chunks.pop();
-        chunks.forEach((chunk) => {
-          const line = chunk.split('\n').find((l) => l.startsWith('data: '));
-          if (line && this.onmessage) this.onmessage({ data: line.slice(6) });
-        });
-      }
-    }).catch(() => this.onerror && this.onerror());
+    }).catch((err) => this.onerror && this.onerror(err));
   }
 
   close() {

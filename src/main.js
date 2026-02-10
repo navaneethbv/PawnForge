@@ -182,7 +182,7 @@ class EventSourcePolyfill {
       signal: this.ctrl.signal
     }).then(async (res) => {
       if (!res.ok) {
-        const errorData = await res.json().catch(() => ({}));
+        const errorData = await res.json().catch(() => ({ status: res.status, statusText: res.statusText }));
         if (this.onerror) this.onerror(errorData);
         return;
       }

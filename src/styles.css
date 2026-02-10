@@ -133,23 +133,48 @@ body {
 }
 
 .eval-bar {
-  width: 24px;
+  width: 28px;
   min-height: 100%;
-  background: var(--black-eval);
-  border-radius: var(--radius-sm) 0 0 var(--radius-sm);
-  position: relative;
-  overflow: hidden;
   flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  position: relative;
 }
 
-.eval-bar-fill {
+.eval-bar-track {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 20px;
+  flex: 1;
+  border-radius: var(--radius-sm) 0 0 var(--radius-sm);
+  overflow: hidden;
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.08);
+  contain: paint;
+}
+
+.eval-bar-segment {
   position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  height: 50%;
-  background: var(--white-eval);
-  transition: height 0.5s ease;
+  left: 0; right: 0; top: 0; bottom: 0;
+  width: 100%; height: 100%;
+  will-change: transform;
+  transition: transform 400ms cubic-bezier(0.4, 0, 0.2, 1);
+  backface-visibility: hidden;
+  transform: translateZ(0);
+}
+
+.eval-bar-segment-top { transform-origin: top; z-index: 2; }
+.eval-bar-segment-bottom { transform-origin: bottom; z-index: 1; }
+
+.eval-bar-center-line {
+  position: absolute;
+  top: 50%; left: 0; right: 0;
+  height: 2px;
+  background: rgba(255,255,255,0.15);
+  transform: translateY(-50%);
+  z-index: 3;
 }
 
 .eval-bar-label {
@@ -157,17 +182,108 @@ body {
   top: 4px;
   left: 50%;
   transform: translateX(-50%);
-  font-size: 0.6rem;
+  font-size: 0.55rem;
   font-weight: 700;
   color: var(--text-dim);
   writing-mode: vertical-lr;
-  z-index: 1;
+  z-index: 4;
+}
+
+.board-container {
+  position: relative;
+  flex: 1;
+  width: 100%;
 }
 
 #board {
   width: 100%;
-  flex: 1;
 }
+
+/* ── Eval Info (eval + W/D/L) ── */
+.eval-info {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  padding: 0.4rem 0;
+  font-size: 0.82rem;
+}
+
+.eval-display {
+  font-weight: 700;
+  font-size: 0.9rem;
+  color: var(--text);
+}
+
+.eval-wdl {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.eval-wdl span {
+  font-weight: 600;
+}
+
+/* ── Board Badge Overlay (eval badges on squares) ── */
+.board-badge-overlay {
+  position: absolute;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  pointer-events: none;
+  z-index: 100;
+}
+
+.board-eval-badge {
+  position: absolute;
+  width: 12.5%;
+  height: 12.5%;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  pointer-events: none;
+}
+
+.board-eval-badge .badge-label {
+  font-weight: 700;
+  font-size: clamp(8px, 1.8vw, 13px);
+  line-height: 1;
+  padding: 1px 3px;
+  border-radius: 3px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.4);
+  transform: translate(25%, -25%);
+  white-space: nowrap;
+  color: #fff;
+}
+
+.board-eval-badge.cat-best .badge-label   { background: rgba(0,140,255,0.85); }
+.board-eval-badge.cat-good .badge-label   { background: rgba(40,196,90,0.85); }
+.board-eval-badge.cat-inaccuracy .badge-label { background: rgba(235,134,33,0.8); }
+.board-eval-badge.cat-mistake .badge-label { background: rgba(220,46,46,0.75); }
+.board-eval-badge.cat-blunder .badge-label { background: rgba(180,20,20,0.85); }
+
+/* ── Board Square Highlights (last move) ── */
+.board-square-highlights {
+  position: absolute;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  pointer-events: none;
+  z-index: 50;
+}
+
+.board-square-highlight {
+  position: absolute;
+  width: 12.5%;
+  height: 12.5%;
+  transition: background-color 0.2s ease;
+}
+
+.board-square-highlight.highlight-best       { background: rgba(0,140,255,0.2); }
+.board-square-highlight.highlight-good       { background: rgba(40,196,90,0.2); }
+.board-square-highlight.highlight-inaccuracy { background: rgba(235,134,33,0.15); }
+.board-square-highlight.highlight-mistake    { background: rgba(220,46,46,0.15); }
+.board-square-highlight.highlight-blunder    { background: rgba(180,20,20,0.2); }
+.board-square-highlight.highlight-neutral    { background: rgba(255,242,105,0.15); }
 
 .board-controls {
   display: grid;

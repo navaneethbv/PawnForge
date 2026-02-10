@@ -32,12 +32,12 @@ PawnForge is a full-stack, anonymous chess analysis web app with a self-hosted S
 
 ### Move Quality Classification
 | Category   | Delta (cp) | Color  |
-|------------|-----------|--------|
-| Best       | 0-20      | Blue   |
-| Good       | 20-60     | Green  |
-| Inaccuracy | 60-150    | Orange |
-| Mistake    | 150-300   | Red    |
-| Blunder    | >300      | Red    |
+|------------|------------|--------|
+| Best       | 0-20       | Blue   |
+| Good       | 20-60      | Green  |
+| Inaccuracy | 60-150     | Orange |
+| Mistake    | 150-300    | Red    |
+| Blunder    | >300       | Red    |
 
 ## Architecture
 
@@ -109,4 +109,26 @@ The engine pool creates workers up to 4 (capped at CPU count). Each worker manag
 
 ## License
 
-Apache License 2.0
+### PawnForge application
+
+The PawnForge application source code in this repository (excluding the bundled Stockfish engine under `engine/Stockfish`) is licensed under the **Apache License, Version 2.0**.
+
+See the top-level `LICENSE` file for the full text of the Apache-2.0 license.
+
+### Stockfish engine
+
+This repository vendors the **Stockfish** chess engine in `engine/Stockfish`. Stockfish is licensed under the **GNU General Public License, version 3 (GPL-3.0)**.
+
+The applicable license terms for Stockfish are provided by the upstream project and included here in `engine/Stockfish/Copying.txt` (and any other license files in that directory). Those terms apply to the Stockfish source code and any binaries built from it.
+
+### Distribution considerations
+
+If you distribute PawnForge together with the bundled Stockfish binary (or a modified version of Stockfish), that distribution must comply with the **GPL-3.0** for the Stockfish component. Among other things, this typically means:
+
+- Preserving Stockfish copyright and license notices.
+- Providing (or offering) the corresponding source code for the Stockfish binary you distribute.
+- Ensuring that the terms under which you distribute Stockfish are compatible with the GPL-3.0.
+
+Using a system-installed Stockfish instead of the bundled one does not remove these obligations; you must still comply with the license of whatever Stockfish binary you use.
+
+Nothing in this README modifies the terms of the Apache-2.0 license for PawnForge's own code or the GPL-3.0 license for Stockfish; downstream users are responsible for ensuring their own compliance when redistributing this software.

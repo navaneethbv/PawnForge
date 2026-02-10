@@ -412,8 +412,17 @@ async function handleApi(req, res) {
 
 function serveStatic(req, res) {
   const reqPath = req.url === '/' ? '/index.html' : req.url.split('?')[0];
+  
   // Decode URI components and resolve to absolute path
-  const decoded = decodeURIComponent(reqPath);
+  let decoded;
+  try {
+    decoded = decodeURIComponent(reqPath);
+  } catch (err) {
+    res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('Bad Request: Invalid URL encoding');
+    return;
+  }
+  
   // Remove leading slash and resolve relative to ROOT
   const normalized = decoded.replace(/^\/+/, '');
   const filePath = resolve(ROOT, normalized);

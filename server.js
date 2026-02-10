@@ -1,7 +1,7 @@
 import http from 'node:http';
 import os from 'node:os';
 import { createReadStream, existsSync } from 'node:fs';
-import { extname, join, normalize, resolve } from 'node:path';
+import { extname, join, normalize, relative, resolve } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 
 const PORT = Number(process.env.PORT || 4173);
@@ -308,7 +308,8 @@ function serveStatic(req, res) {
   const normalized = normalize(reqPath).replace(/^\.+(\/|\\)/, '');
   const filePath = resolve(join(ROOT, normalized));
   
-  if (!filePath.startsWith(ROOT)) {
+  const rel = relative(ROOT, filePath);
+  if (rel.startsWith('..') || resolve(ROOT, rel) !== filePath) {
     res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
     res.end('Forbidden');
     return;
@@ -323,7 +324,8 @@ function serveStatic(req, res) {
   const ext = extname(filePath);
   res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream' });
   createReadStream(filePath).on('error', (err) => {
-    console.error(`Error serving ${reqPath}:`, err.message);
+    const sanitizedPath = reqPath.replace(/[\r\n]/g, '');
+    console.error(`Error serving ${sanitizedPath}:`, err.message);
     if (!res.headersSent) {
       res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
       res.end('Internal server error');

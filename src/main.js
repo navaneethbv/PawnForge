@@ -72,20 +72,20 @@ function renderAllMoves(moves) {
   const rows = filtered.map((m, idx) => `${idx + 1}. ${m.uci} eval ${(m.evalCp / 100).toFixed(2)} Δ${(m.deltaCp / 100).toFixed(2)} ${m.category.label}`);
   el.allMovesOutput.textContent = rows.join('\n');
 
-  const bestByPiece = new Map();
+  const bestByFile = new Map();
   moves.forEach((m) => {
-    const piece = m.uci[0];
-    if (!bestByPiece.has(piece)) bestByPiece.set(piece, m);
+    const file = m.uci[0];
+    if (!bestByFile.has(file)) bestByFile.set(file, m);
   });
 
   el.pieceBadges.innerHTML = '';
-  [...bestByPiece.entries()].forEach(([piece, move]) => {
+  [...bestByFile.entries()].forEach(([file, move]) => {
     const btn = document.createElement('button');
     btn.className = `badge ${move.category.key}`;
-    btn.textContent = `${piece.toUpperCase()}: ${move.uci} (${move.category.label})`;
+    btn.textContent = `${file.toUpperCase()}: ${move.uci} (${move.category.label})`;
     btn.addEventListener('click', () => {
-      const perPiece = moves.filter((m) => m.uci.startsWith(piece));
-      el.pieceMoves.textContent = perPiece.map((m) => `${m.uci}  ${(m.evalCp / 100).toFixed(2)}  ${m.category.label}`).join('\n');
+      const perFile = moves.filter((m) => m.uci.startsWith(file));
+      el.pieceMoves.textContent = perFile.map((m) => `${m.uci}  ${(m.evalCp / 100).toFixed(2)}  ${m.category.label}`).join('\n');
     });
     el.pieceBadges.appendChild(btn);
   });
@@ -125,8 +125,10 @@ async function analyzeGame() {
     const hist = replay.history({ verbose: true });
 
     const fenSequence = [];
+    const preMoveSequence = [];
     const cursor = new Chess();
     hist.forEach((mv) => {
+      preMoveSequence.push(cursor.fen());
       cursor.move(mv);
       fenSequence.push(cursor.fen());
     });
@@ -134,6 +136,7 @@ async function analyzeGame() {
     const data = await postJson('/api/analyze/game', {
       pgn: el.pgnInput.value,
       fenSequence,
+      preMoveSequence,
       settings: { depth: Number(document.getElementById('depthSelect').value) }
     });
 
@@ -145,10 +148,18 @@ async function analyzeGame() {
 }
 
 async function detectOpening() {
-  const query = encodeURIComponent(game.history().join(' '));
-  const res = await fetch(`/api/opening?moves=${query}`);
-  const data = await res.json();
-  el.openingOutput.textContent = `${data.eco} ${data.name}\nBook window: ${data.bookPlyRange[0]}-${data.bookPlyRange[1]}`;
+  try {
+    const query = encodeURIComponent(game.history().join(' '));
+    const res = await fetch(`/api/opening?moves=${query}`);
+    if (!res.ok) {
+      el.openingOutput.textContent = `Error: Failed to detect opening (${res.status} ${res.statusText})`;
+      return;
+    }
+    const data = await res.json();
+    el.openingOutput.textContent = `${data.eco} ${data.name}\nBook window: ${data.bookPlyRange[0]}-${data.bookPlyRange[1]}`;
+  } catch (error) {
+    el.openingOutput.textContent = `Error: ${error.message}`;
+  }
 }
 
 function bindUI() {
@@ -181,21 +192,58 @@ class EventSourcePolyfill {
       body: payload,
       signal: this.ctrl.signal
     }).then(async (res) => {
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buf = '';
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        const chunks = buf.split('\n\n');
-        buf = chunks.pop();
-        chunks.forEach((chunk) => {
-          const line = chunk.split('\n').find((l) => l.startsWith('data: '));
-          if (line && this.onmessage) this.onmessage({ data: line.slice(6) });
-        });
+      try {
+        // Check HTTP status
+        if (!res.ok) {
+          let message = '';
+          try {
+            message = await res.text();
+          } catch (e) {
+            // Ignore body read errors and fall back to status message
+          }
+          const errorMessage = message || ('Request failed with status ' + res.status);
+          if (this.onerror) this.onerror(new Error(errorMessage));
+          return;
+        }
+
+        // Check content type for SSE
+        const contentType = (res.headers && res.headers.get && res.headers.get('content-type')) || '';
+        if (contentType.indexOf('text/event-stream') === -1) {
+          let message = '';
+          try {
+            message = await res.text();
+          } catch (e) {
+            // Ignore body read errors and fall back to generic message
+          }
+          const errorMessage = message || 'Expected SSE (text/event-stream) but received: ' + contentType;
+          if (this.onerror) this.onerror(new Error(errorMessage));
+          return;
+        }
+
+        // Ensure response body is present
+        if (!res.body) {
+          if (this.onerror) this.onerror(new Error('Response body is not readable.'));
+          return;
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = '';
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const chunks = buf.split('\n\n');
+          buf = chunks.pop();
+          chunks.forEach((chunk) => {
+            const line = chunk.split('\n').find((l) => l.startsWith('data: '));
+            if (line && this.onmessage) this.onmessage({ data: line.slice(6) });
+          });
+        }
+      } catch (err) {
+        if (this.onerror) this.onerror(err);
       }
-    }).catch(() => this.onerror && this.onerror());
+    }).catch((err) => this.onerror && this.onerror(err));
   }
 
   close() {

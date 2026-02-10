@@ -181,6 +181,11 @@ class EventSourcePolyfill {
       body: payload,
       signal: this.ctrl.signal
     }).then(async (res) => {
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        if (this.onerror) this.onerror(errorData);
+        return;
+      }
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buf = '';

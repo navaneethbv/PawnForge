@@ -483,7 +483,8 @@ function drawEvalGraph(plies, activePly = -1) {
   ctx.moveTo(pad.left, midY);
   plies.forEach((p, i) => {
     const x = pad.left + i * xStep;
-    const evalClamped = clamp(p.evalCp);
+    const whiteEval = toWhiteRelativeEval(p.evalCp, p.fen);
+    const evalClamped = clamp(whiteEval);
     const y = midY - (evalClamped / maxEval) * (gh / 2);
     if (i === 0) ctx.lineTo(x, y);
     else ctx.lineTo(x, y);
@@ -497,7 +498,8 @@ function drawEvalGraph(plies, activePly = -1) {
   ctx.beginPath();
   plies.forEach((p, i) => {
     const x = pad.left + i * xStep;
-    const evalClamped = clamp(p.evalCp);
+    const whiteEval = toWhiteRelativeEval(p.evalCp, p.fen);
+    const evalClamped = clamp(whiteEval);
     const y = midY - (evalClamped / maxEval) * (gh / 2);
     if (i === 0) ctx.moveTo(x, y);
     else ctx.lineTo(x, y);
@@ -510,7 +512,8 @@ function drawEvalGraph(plies, activePly = -1) {
   plies.forEach((p, i) => {
     if (!p.category) return;
     const x = pad.left + i * xStep;
-    const evalClamped = clamp(p.evalCp);
+    const whiteEval = toWhiteRelativeEval(p.evalCp, p.fen);
+    const evalClamped = clamp(whiteEval);
     const y = midY - (evalClamped / maxEval) * (gh / 2);
 
     if (p.category.key === 'mistake' || p.category.key === 'blunder') {

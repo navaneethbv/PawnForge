@@ -1,0 +1,11 @@
+node_modules/
+
+# Stockfish build artifacts (keep source, ignore compiled objects)
+engine/Stockfish/src/*.o
+engine/Stockfish/src/stockfish
+engine/Stockfish/src/*.nnue
+engine/Stockfish/src/.depend
+
+# OS
+.DS_Store
+Thumbs.db

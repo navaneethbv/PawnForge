@@ -145,10 +145,18 @@ async function analyzeGame() {
 }
 
 async function detectOpening() {
-  const query = encodeURIComponent(game.history().join(' '));
-  const res = await fetch(`/api/opening?moves=${query}`);
-  const data = await res.json();
-  el.openingOutput.textContent = `${data.eco} ${data.name}\nBook window: ${data.bookPlyRange[0]}-${data.bookPlyRange[1]}`;
+  try {
+    const query = encodeURIComponent(game.history().join(' '));
+    const res = await fetch(`/api/opening?moves=${query}`);
+    if (!res.ok) {
+      el.openingOutput.textContent = `Error: Failed to detect opening (${res.status} ${res.statusText})`;
+      return;
+    }
+    const data = await res.json();
+    el.openingOutput.textContent = `${data.eco} ${data.name}\nBook window: ${data.bookPlyRange[0]}-${data.bookPlyRange[1]}`;
+  } catch (error) {
+    el.openingOutput.textContent = `Error: ${error.message}`;
+  }
 }
 
 function bindUI() {

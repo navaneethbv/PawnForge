@@ -271,23 +271,34 @@ function parseBody(req, maxBytes = 10 * 1024 * 1024) {
   return new Promise((resolve, reject) => {
     let raw = '';
     let bytes = 0;
-    req.on('data', (d) => {
+    let destroyed = false;
+    
+    const onData = (d) => {
+      if (destroyed) return;
       bytes += d.length;
       if (bytes > maxBytes) {
+        destroyed = true;
+        req.removeListener('data', onData);
+        req.removeListener('end', onEnd);
         req.destroy();
         reject(new Error('Request body too large'));
         return;
       }
       raw += d;
-    });
-    req.on('end', () => {
+    };
+    
+    const onEnd = () => {
+      if (destroyed) return;
       if (!raw) return resolve({});
       try {
         resolve(JSON.parse(raw));
       } catch (e) {
         reject(e);
       }
-    });
+    };
+    
+    req.on('data', onData);
+    req.on('end', onEnd);
   });
 }
 
@@ -360,8 +371,9 @@ async function handleApi(req, res) {
           // Analyze position BEFORE this move was played
           const preMoveAnalysis = await pool.analyzePosition({ fen: preMoveSequence[i], depth: body.settings?.depth ?? 10, multipv: 1 });
           const bestBeforeMove = preMoveAnalysis.bestEvalCp;
-          // Centipawn loss: best eval before move plus eval after played move
-          // (evalAfterMove is negated because perspective flips after each move)
+          // Centipawn loss calculation:
+          // evalAfterMove is from opponent's perspective (negated relative to the player who moved),
+          // so bestBeforeMove + evalAfterMove correctly measures the centipawn loss
           deltaCp = Math.max(0, bestBeforeMove + evalAfterMove);
         }
         
@@ -404,8 +416,10 @@ function serveStatic(req, res) {
   const decoded = decodeURIComponent(reqPath);
   const filePath = resolve(ROOT, decoded);
   
-  // Verify resolved path stays within ROOT directory (with separator to prevent prefix attacks)
-  if (!filePath.startsWith(ROOT + sep)) {
+  // Verify resolved path stays within ROOT directory
+  // Check that filePath starts with ROOT followed by separator (or is exactly ROOT)
+  const rootWithSep = ROOT.endsWith(sep) ? ROOT : ROOT + sep;
+  if (filePath !== ROOT && !filePath.startsWith(rootWithSep)) {
     res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
     res.end('Forbidden');
     return;

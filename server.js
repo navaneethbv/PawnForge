@@ -272,7 +272,7 @@ function parseBody(req, maxBytes = 10 * 1024 * 1024) {
     let raw = '';
     let bytes = 0;
     let destroyed = false;
-    
+
     const onData = (d) => {
       if (destroyed) return;
       bytes += d.length;
@@ -286,7 +286,7 @@ function parseBody(req, maxBytes = 10 * 1024 * 1024) {
       }
       raw += d;
     };
-    
+
     const onEnd = () => {
       if (destroyed) return;
       if (!raw) return resolve({});
@@ -296,7 +296,7 @@ function parseBody(req, maxBytes = 10 * 1024 * 1024) {
         reject(e);
       }
     };
-    
+
     req.on('data', onData);
     req.on('end', onEnd);
   });
@@ -365,7 +365,7 @@ async function handleApi(req, res) {
         const fen = fenSequence[i];
         const postMoveAnalysis = await pool.analyzePosition({ fen, depth: body.settings?.depth ?? 10, multipv: 1 });
         const evalAfterMove = postMoveAnalysis.bestEvalCp;
-        
+
         let deltaCp = 0;
         if (i > 0 && preMoveSequence[i]) {
           // Analyze position BEFORE this move was played
@@ -376,14 +376,14 @@ async function handleApi(req, res) {
           // so bestBeforeMove + evalAfterMove correctly measures the centipawn loss
           deltaCp = Math.max(0, bestBeforeMove + evalAfterMove);
         }
-        
-        plies.push({ 
-          ply: i + 1, 
-          san: moves[i] || `ply-${i + 1}`, 
-          fen, 
-          evalCp: evalAfterMove, 
-          deltaCp, 
-          category: classify(deltaCp) 
+
+        plies.push({
+          ply: i + 1,
+          san: moves[i] || `ply-${i + 1}`,
+          fen,
+          evalCp: evalAfterMove,
+          deltaCp,
+          category: classify(deltaCp)
         });
       }
 
@@ -412,8 +412,8 @@ async function handleApi(req, res) {
 
 function serveStatic(req, res) {
   const reqPath = req.url === '/' ? '/index.html' : req.url.split('?')[0];
-  
-  // Decode URI components and resolve to absolute path
+
+  // Decode URI components and resolve to absolute path safely
   let decoded;
   try {
     decoded = decodeURIComponent(reqPath);
@@ -422,11 +422,11 @@ function serveStatic(req, res) {
     res.end('Bad Request: Invalid URL encoding');
     return;
   }
-  
+
   // Strip leading slashes so resolve(ROOT, ...) cannot treat the request as an absolute path
   const normalized = decoded.replace(/^\/+/, '');
   const filePath = resolve(ROOT, normalized);
-  
+
   // Verify resolved path stays within ROOT directory
   // Check that filePath starts with ROOT followed by separator (or is exactly ROOT)
   const rootWithSep = ROOT.endsWith(sep) ? ROOT : ROOT + sep;
@@ -435,7 +435,7 @@ function serveStatic(req, res) {
     res.end('Forbidden');
     return;
   }
-  
+
   const ext = extname(filePath);
   const stream = createReadStream(filePath);
 
@@ -459,3 +459,4 @@ http.createServer((req, res) => {
 }).listen(PORT, () => {
   console.log(`PawnForge running at http://localhost:${PORT} | stockfish=${pool.enabled ? 'on' : 'off'}`);
 });
+

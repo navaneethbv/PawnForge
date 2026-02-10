@@ -372,6 +372,8 @@ function runAllMoves() {
   el.pieceBadges.innerHTML = '';
   el.allMovesTable.innerHTML = '';
   el.explorerFilters.style.display = 'none';
+  allMovesResult = [];
+  allMovesResultFen = null;
 
   const currentFen = game.fen();
 

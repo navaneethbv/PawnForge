@@ -69,7 +69,10 @@ async function analyzePosition() {
 function renderAllMoves(moves) {
   const filterPiece = el.filterPiece.value;
   const filtered = filterPiece ? moves.filter((m) => m.uci.startsWith(filterPiece)) : moves;
-  const rows = filtered.map((m, idx) => `${idx + 1}. ${m.uci} eval ${(m.evalCp / 100).toFixed(2)} Δ${(m.deltaCp / 100).toFixed(2)} ${m.category.label}`);
+  const rows = filtered.map(
+    (m, idx) =>
+      `${idx + 1}. ${m.uci} eval ${(m.evalCp / 100).toFixed(2)} Δ${(m.deltaCp / 100).toFixed(2)} ${m.category.label}`
+  );
   el.allMovesOutput.textContent = rows.join('\n');
 
   const bestByFile = new Map();
@@ -85,7 +88,9 @@ function renderAllMoves(moves) {
     btn.textContent = `${file.toUpperCase()}: ${move.uci} (${move.category.label})`;
     btn.addEventListener('click', () => {
       const perFile = moves.filter((m) => m.uci.startsWith(file));
-      el.pieceMoves.textContent = perFile.map((m) => `${m.uci}  ${(m.evalCp / 100).toFixed(2)}  ${m.category.label}`).join('\n');
+      el.pieceMoves.textContent = perFile
+        .map((m) => `${m.uci}  ${(m.evalCp / 100).toFixed(2)}  ${m.category.label}`)
+        .join('\n');
     });
     el.pieceBadges.appendChild(btn);
   });
@@ -94,7 +99,10 @@ function renderAllMoves(moves) {
 function runAllMoves() {
   el.allMovesOutput.textContent = 'Starting streaming analysis...';
   const es = new EventSourcePolyfill('/api/analyze/all-moves', {
-    payload: JSON.stringify({ fen: game.fen(), settings: { movetimeMs: Number(document.getElementById('movetimeSelect').value) } })
+    payload: JSON.stringify({
+      fen: game.fen(),
+      settings: { movetimeMs: Number(document.getElementById('movetimeSelect').value) }
+    })
   });
 
   const partial = [];
@@ -102,7 +110,12 @@ function runAllMoves() {
     const data = JSON.parse(event.data);
     if (data.type === 'partial') {
       partial.push(data.row);
-      el.allMovesOutput.textContent = `Streaming... ${Math.round(data.progress * 100)}%\n` + partial.slice(-8).map((m) => `${m.uci} ${(m.evalCp / 100).toFixed(2)}`).join('\n');
+      el.allMovesOutput.textContent =
+        `Streaming... ${Math.round(data.progress * 100)}%\n` +
+        partial
+          .slice(-8)
+          .map((m) => `${m.uci} ${(m.evalCp / 100).toFixed(2)}`)
+          .join('\n');
     }
 
     if (data.type === 'final') {
@@ -112,8 +125,9 @@ function runAllMoves() {
     }
   };
 
-  es.onerror = () => {
-    el.allMovesOutput.textContent = 'Streaming failed. Ensure Stockfish is available.';
+  es.onerror = (error) => {
+    const msg = error && error.message ? error.message : 'Streaming failed. Ensure Stockfish is available.';
+    el.allMovesOutput.textContent = `Streaming failed: ${msg}`;
     es.close();
   };
 }
@@ -140,8 +154,12 @@ async function analyzeGame() {
       settings: { depth: Number(document.getElementById('depthSelect').value) }
     });
 
-    el.gameOutput.textContent = `Opening: ${data.opening.eco} ${data.opening.name}\nPly: ${data.plyCount}\n\n` +
-      data.plies.slice(0, 40).map((p) => `${p.ply}. ${p.san} eval ${(p.evalCp / 100).toFixed(2)} ${p.category.label}`).join('\n');
+    el.gameOutput.textContent =
+      `Opening: ${data.opening.eco} ${data.opening.name}\nPly: ${data.plyCount}\n\n` +
+      data.plies
+        .slice(0, 40)
+        .map((p) => `${p.ply}. ${p.san} eval ${(p.evalCp / 100).toFixed(2)} ${p.category.label}`)
+        .join('\n');
   } catch (error) {
     el.gameOutput.textContent = `Error: ${error.message}`;
   }
@@ -186,44 +204,39 @@ class EventSourcePolyfill {
     this.ctrl = new AbortController();
     this.onmessage = null;
     this.onerror = null;
+
     fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: payload,
       signal: this.ctrl.signal
-    }).then(async (res) => {
-      try {
+    })
+      .then(async (res) => {
         // Check HTTP status
         if (!res.ok) {
-          let message = '';
+          let details = '';
           try {
-            message = await res.text();
-          } catch (e) {
-            // Ignore body read errors and fall back to status message
+            details = await res.text();
+          } catch (_err) {
+            details = '';
           }
-          const errorMessage = message || ('Request failed with status ' + res.status);
-          if (this.onerror) this.onerror(new Error(errorMessage));
-          return;
+          throw new Error(details || `Request failed with status ${res.status}`);
         }
 
         // Check content type for SSE
-        const contentType = (res.headers && res.headers.get && res.headers.get('content-type')) || '';
-        if (contentType.indexOf('text/event-stream') === -1) {
-          let message = '';
+        const contentType = res.headers.get('content-type') || '';
+        if (!contentType.includes('text/event-stream')) {
+          let details = '';
           try {
-            message = await res.text();
-          } catch (e) {
-            // Ignore body read errors and fall back to generic message
+            details = await res.text();
+          } catch (_err) {
+            details = '';
           }
-          const errorMessage = message || 'Expected SSE (text/event-stream) but received: ' + contentType;
-          if (this.onerror) this.onerror(new Error(errorMessage));
-          return;
+          throw new Error(details || `Expected SSE response but received: ${contentType || 'unknown content type'}`);
         }
 
-        // Ensure response body is present
         if (!res.body) {
-          if (this.onerror) this.onerror(new Error('Response body is not readable.'));
-          return;
+          throw new Error('Response body is not readable.');
         }
 
         const reader = res.body.getReader();
@@ -234,16 +247,16 @@ class EventSourcePolyfill {
           if (done) break;
           buf += decoder.decode(value, { stream: true });
           const chunks = buf.split('\n\n');
-          buf = chunks.pop();
+          buf = chunks.pop() || '';
           chunks.forEach((chunk) => {
             const line = chunk.split('\n').find((l) => l.startsWith('data: '));
             if (line && this.onmessage) this.onmessage({ data: line.slice(6) });
           });
         }
-      } catch (err) {
-        if (this.onerror) this.onerror(err);
-      }
-    }).catch((err) => this.onerror && this.onerror(err));
+      })
+      .catch((error) => {
+        if (this.onerror) this.onerror(error);
+      });
   }
 
   close() {

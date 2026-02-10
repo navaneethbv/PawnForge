@@ -112,8 +112,9 @@ function runAllMoves() {
     }
   };
 
-  es.onerror = () => {
-    el.allMovesOutput.textContent = 'Streaming failed. Ensure Stockfish is available.';
+  es.onerror = (error) => {
+    const msg = error && error.message ? error.message : 'Streaming failed. Ensure Stockfish is available.';
+    el.allMovesOutput.textContent = `Streaming failed: ${msg}`;
     es.close();
   };
 }
@@ -181,6 +182,31 @@ class EventSourcePolyfill {
       body: payload,
       signal: this.ctrl.signal
     }).then(async (res) => {
+      if (!res.ok) {
+        let details = '';
+        try {
+          details = await res.text();
+        } catch (_err) {
+          details = '';
+        }
+        throw new Error(details || `Request failed with status ${res.status}`);
+      }
+
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.includes('text/event-stream')) {
+        let details = '';
+        try {
+          details = await res.text();
+        } catch (_err) {
+          details = '';
+        }
+        throw new Error(details || `Expected SSE response but received: ${contentType || 'unknown content type'}`);
+      }
+
+      if (!res.body) {
+        throw new Error('Response body is not readable.');
+      }
+
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buf = '';
@@ -195,7 +221,7 @@ class EventSourcePolyfill {
           if (line && this.onmessage) this.onmessage({ data: line.slice(6) });
         });
       }
-    }).catch(() => this.onerror && this.onerror());
+    }).catch((error) => this.onerror && this.onerror(error));
   }
 
   close() {

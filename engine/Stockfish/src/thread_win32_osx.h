@@ -55,6 +55,7 @@ public:
     pthread_attr_init(attr);
     pthread_attr_setstacksize(attr, TH_STACK_SIZE);
     pthread_create(&thread, attr, start_routine<T>, new P(obj, fun));
+    pthread_attr_destroy(attr);
   }
   void join() { pthread_join(thread, nullptr); }
 };

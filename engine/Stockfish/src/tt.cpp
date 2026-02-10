@@ -16,9 +16,11 @@
   along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
+#include <cstdlib>
 #include <cstring>   // For std::memset
 #include <iostream>
 #include <thread>
+#include <vector>
 
 #include "bitboard.h"
 #include "misc.h"

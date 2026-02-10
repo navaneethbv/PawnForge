@@ -333,11 +333,19 @@ function serveStatic(req, res) {
   const normalized = normalize(reqPath).replace(/^\.+(\/|\\)/, '');
   const filePath = join(ROOT, normalized);
   const ext = extname(filePath);
-  res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream' });
-  createReadStream(filePath).on('error', () => {
-    res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+  const stream = createReadStream(filePath);
+
+  stream.on('open', () => {
+    res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream' });
+    stream.pipe(res);
+  });
+
+  stream.on('error', () => {
+    if (!res.headersSent) {
+      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+    }
     res.end('Not found');
-  }).pipe(res);
+  });
 }
 
 http.createServer((req, res) => {

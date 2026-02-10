@@ -7,7 +7,8 @@ import { spawn, spawnSync } from 'node:child_process';
 const PORT = Number(process.env.PORT || 4173);
 const ROOT = process.cwd();
 const STOCKFISH_BIN = process.env.STOCKFISH_BIN || (existsSync('/usr/games/stockfish') ? '/usr/games/stockfish' : 'stockfish');
-const ENGINE_AVAILABLE = spawnSync(STOCKFISH_BIN, ['-h'], { stdio: 'ignore' }).status !== null;
+const ENGINE_CHECK = spawnSync(STOCKFISH_BIN, ['-h'], { stdio: 'ignore' });
+const ENGINE_AVAILABLE = ENGINE_CHECK.status === 0 && !ENGINE_CHECK.error;
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',

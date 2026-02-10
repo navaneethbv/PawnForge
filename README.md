@@ -65,40 +65,129 @@ Node.js HTTP Server (server.js)
 | `/api/opening` | GET | Detect opening by move sequence |
 | `/api/status` | GET | Engine and server status |
 
-## Setup
+## How to Run
 
 ### Prerequisites
-- Node.js 18+
-- C++ compiler (g++) for building Stockfish
+
+| Requirement | Version | Notes |
+|-------------|---------|-------|
+| Node.js     | 18+     | Only built-in modules are used (no `npm install` needed) |
+| C++ compiler | g++ or clang++ | Required to build Stockfish from source |
+| make        | any     | Build tool for Stockfish |
+
+### Quick Start
+
+```bash
+# 1. Clone the repository
+git clone https://github.com/navaneethbv/PawnForge.git
+cd PawnForge
+
+# 2. Build Stockfish (one-time step)
+cd engine/Stockfish/src
+make -j$(nproc) build ARCH=x86-64
+cd ../../..
+
+# 3. Start the server
+npm start
+```
+
+Open **http://localhost:4173** in your browser.
 
 ### Build Stockfish
+
+The engine source is included under `engine/Stockfish/`. Build it for your platform:
+
 ```bash
 cd engine/Stockfish/src
 make -j$(nproc) build ARCH=x86-64
 ```
 
-### Run
+Common `ARCH` values:
+
+| ARCH | Description |
+|------|-------------|
+| `x86-64` | 64-bit x86 (most Linux/macOS/WSL systems) |
+| `x86-64-modern` | 64-bit with POPCNT (most CPUs from ~2008+) |
+| `x86-64-avx2` | 64-bit with AVX2 (Intel Haswell+ / AMD Excavator+) |
+| `apple-silicon` | Apple M1/M2/M3 chips |
+| `armv8` | 64-bit ARM (Raspberry Pi 4, etc.) |
+
+Run `make help` inside `engine/Stockfish/src` for the full list.
+
+After building, verify the binary works:
+
 ```bash
-npm start
+echo "quit" | ./engine/Stockfish/src/stockfish
+# Expected: "Stockfish 16 by the Stockfish developers ..."
 ```
 
-The server starts at `http://localhost:4173` with Stockfish auto-detected from `engine/Stockfish/src/stockfish`.
+### Using a System-Installed Stockfish
+
+If you already have Stockfish installed (e.g. via `apt install stockfish` or `brew install stockfish`), you can skip the build step. The server auto-detects it in this order:
+
+1. `STOCKFISH_BIN` environment variable (if set)
+2. `engine/Stockfish/src/stockfish` (compiled from source)
+3. `/usr/games/stockfish` (Debian/Ubuntu package location)
+4. `stockfish` on `PATH`
+
+To point at a specific binary:
+
+```bash
+STOCKFISH_BIN=/path/to/stockfish npm start
+```
 
 ### Environment Variables
+
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PORT` | `4173` | Server port |
+| `PORT` | `4173` | HTTP server port |
 | `STOCKFISH_BIN` | auto-detect | Path to Stockfish binary |
+
+### Running on a Custom Port
+
+```bash
+PORT=8080 npm start
+```
+
+### Testing Locally
+
+Once the server is running, you can verify the API from the command line:
+
+```bash
+# Check engine status
+curl http://localhost:4173/api/status
+
+# Analyze the starting position
+curl -X POST http://localhost:4173/api/analyze/position \
+  -H "Content-Type: application/json" \
+  -d '{"fen":"rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1","settings":{"depth":10,"multiPv":3}}'
+
+# Detect an opening
+curl "http://localhost:4173/api/opening?moves=e4+e5+Nf3+Nc6+Bb5"
+```
+
+### Testing in the Browser
+
+1. **Analyze tab** - The board loads at the starting position. Drag pieces to make moves, then click "Analyze Position" to see engine evaluation with PV lines.
+
+2. **Game Review tab** - Paste a PGN (e.g. from lichess or chess.com), click "Analyze Game". The eval graph renders and you can step through moves with arrow keys or by clicking the graph.
+
+3. **Move Explorer tab** - Click "Run All-Moves Explorer" to evaluate every legal move in the current position. Watch the streaming progress bar, then inspect piece badges and the ranked move table.
+
+4. **Openings tab** - Play a few opening moves on the board, then click "Detect Opening" to see the ECO code, name, and suggested continuations.
+
+### Troubleshooting
+
+| Problem | Solution |
+|---------|----------|
+| `Stockfish is not available` | Build the engine (`cd engine/Stockfish/src && make build ARCH=x86-64`) or install it system-wide |
+| `Engine timeout` errors | Increase the analysis depth/time settings, or check that the Stockfish binary runs correctly (`echo "quit" \| stockfish`) |
+| Port already in use | Set a different port: `PORT=3000 npm start` |
+| Board doesn't render | Ensure you have internet access (chessboard.js and chess.js load from CDN) |
 
 ## Engine Configuration
 
-Stockfish binary resolution order:
-1. `STOCKFISH_BIN` environment variable
-2. `engine/Stockfish/src/stockfish` (built-in)
-3. `/usr/games/stockfish` (system)
-4. `stockfish` on PATH
-
-The engine pool creates workers up to 4 (capped at CPU count). Each worker manages a Stockfish UCI process with a job queue.
+The engine pool spawns up to 4 Stockfish UCI worker processes (capped at the number of CPU cores). Each worker maintains a job queue for sequential command execution. An LRU cache (500 entries, 1-hour TTL) avoids recomputing previously analyzed positions.
 
 ## Tech Stack
 

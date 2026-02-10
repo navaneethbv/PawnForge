@@ -3,67 +3,192 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>PawnForge</title>
-    <link rel="stylesheet" href="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css" integrity="sha256-CHESSBOARD_CSS_SRI_HASH_GOES_HERE" crossorigin="anonymous">
+    <title>PawnForge - Chess Analysis</title>
+    <link rel="stylesheet" href="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css" />
     <link rel="stylesheet" href="/src/styles.css" />
   </head>
   <body>
     <div id="app">
       <header class="topbar">
-        <h1>♟️ PawnForge</h1>
-        <p>Full-stack chess analysis with Stockfish API, PGN review, opening insights, and all-legal-moves explorer.</p>
+        <div class="topbar-left">
+          <h1><span class="logo-icon">&#9823;</span> PawnForge</h1>
+        </div>
+        <nav class="topbar-nav">
+          <button class="tab-btn active" data-tab="analyze">Analyze</button>
+          <button class="tab-btn" data-tab="game-review">Game Review</button>
+          <button class="tab-btn" data-tab="explorer">Move Explorer</button>
+          <button class="tab-btn" data-tab="opening">Openings</button>
+        </nav>
+        <div class="topbar-right">
+          <span id="engineStatus" class="engine-indicator">
+            <span class="dot"></span> Engine idle
+          </span>
+        </div>
       </header>
 
       <main class="layout">
+        <!-- Left: Board Panel -->
         <section class="panel board-panel">
-          <div id="board"></div>
+          <div class="board-wrapper">
+            <div id="evalBar" class="eval-bar">
+              <div id="evalBarFill" class="eval-bar-fill"></div>
+              <span id="evalBarLabel" class="eval-bar-label">0.0</span>
+            </div>
+            <div id="board"></div>
+          </div>
+
           <div class="board-controls">
-            <button id="flipBtn">Flip</button>
-            <button id="resetBtn">Reset</button>
+            <button id="flipBtn" title="Flip board">&#8693; Flip</button>
+            <button id="resetBtn" title="Reset to start">&#8635; Reset</button>
+            <button id="undoBtn" title="Undo last move">&#9664; Undo</button>
           </div>
 
-          <label for="fenInput">FEN</label>
-          <textarea id="fenInput" rows="2"></textarea>
-          <button id="loadFenBtn">Load FEN</button>
-
-          <h3>Move List</h3>
-          <ol id="moveList"></ol>
-        </section>
-
-        <section class="panel analysis-panel">
-          <div class="inline-controls">
-            <label>Depth
-              <select id="depthSelect"><option>10</option><option selected>12</option><option>15</option></select>
-            </label>
-            <label>Move time (ms)
-              <select id="movetimeSelect"><option>80</option><option selected>120</option><option>250</option></select>
-            </label>
+          <div class="fen-row">
+            <input type="text" id="fenInput" placeholder="Paste FEN here..." />
+            <button id="loadFenBtn">Load</button>
+            <button id="copyFenBtn" title="Copy FEN">&#128203;</button>
           </div>
 
-          <h2>Position Analysis</h2>
-          <button id="analyzePositionBtn">Analyze Position</button>
-          <pre id="positionOutput">No analysis yet.</pre>
-
-          <h2>Evaluate Every Legal Move</h2>
-          <button id="analyzeAllMovesBtn">Run All-Moves Explorer</button>
-          <label>Filter by from-square file (a-h)
-            <select id="filterPiece"><option value="">All</option><option>a</option><option>b</option><option>c</option><option>d</option><option>e</option><option>f</option><option>g</option><option>h</option></select>
-          </label>
-          <div id="pieceBadges" class="badge-wrap"></div>
-          <pre id="pieceMoves">Click a piece badge to inspect per-piece legal moves.</pre>
-          <pre id="allMovesOutput">Run explorer to stream per-move results.</pre>
-
-          <h2>Opening Discovery</h2>
-          <button id="openingBtn">Detect Opening</button>
-          <pre id="openingOutput">No opening detected yet.</pre>
+          <div class="move-list-container">
+            <h3>Moves</h3>
+            <div id="moveList" class="move-list"></div>
+          </div>
         </section>
 
-        <section class="panel game-panel">
-          <h2>PGN Game Review</h2>
-          <textarea id="pgnInput" rows="12" placeholder="Paste PGN here..."></textarea>
-          <button id="analyzeGameBtn">Analyze Game</button>
-          <pre id="gameOutput">No game report yet.</pre>
-          <p id="engineStatus">Engine status: idle.</p>
+        <!-- Center: Analysis content (tabs) -->
+        <section class="panel center-panel">
+          <!-- Tab: Analyze -->
+          <div id="tab-analyze" class="tab-content active">
+            <div class="section-header">
+              <h2>Position Analysis</h2>
+              <div class="inline-controls">
+                <label>Depth
+                  <select id="depthSelect">
+                    <option>8</option>
+                    <option>10</option>
+                    <option selected>12</option>
+                    <option>15</option>
+                    <option>18</option>
+                    <option>20</option>
+                  </select>
+                </label>
+                <label>Lines
+                  <select id="multipvSelect">
+                    <option>1</option>
+                    <option selected>3</option>
+                    <option>5</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+            <button id="analyzePositionBtn" class="btn-primary">&#9881; Analyze Position</button>
+
+            <div id="topMovesContainer" class="top-moves-container">
+              <div class="placeholder-text">Click "Analyze Position" to see engine evaluation.</div>
+            </div>
+
+            <div id="pvLines" class="pv-lines">
+              <!-- Filled dynamically -->
+            </div>
+          </div>
+
+          <!-- Tab: Game Review -->
+          <div id="tab-game-review" class="tab-content">
+            <div class="section-header">
+              <h2>PGN Game Review</h2>
+            </div>
+            <textarea id="pgnInput" rows="6" placeholder="Paste PGN here...&#10;&#10;1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 ..."></textarea>
+            <div class="game-controls-row">
+              <button id="analyzeGameBtn" class="btn-primary">&#9881; Analyze Game</button>
+              <label>Depth
+                <select id="gameDepthSelect">
+                  <option>8</option>
+                  <option selected>10</option>
+                  <option>12</option>
+                </select>
+              </label>
+            </div>
+            <div id="gameProgress" class="game-progress" style="display:none;">
+              <div class="progress-bar"><div id="gameProgressFill" class="progress-fill"></div></div>
+              <span id="gameProgressText">Analyzing...</span>
+            </div>
+
+            <div id="evalGraphContainer" class="eval-graph-container" style="display:none;">
+              <h3>Evaluation Graph</h3>
+              <canvas id="evalGraph" width="700" height="180"></canvas>
+            </div>
+
+            <div id="gameReviewNav" class="game-review-nav" style="display:none;">
+              <button id="navFirst" title="First move">&#9198;</button>
+              <button id="navPrev" title="Previous move">&#9664;</button>
+              <button id="navNext" title="Next move">&#9654;</button>
+              <button id="navLast" title="Last move">&#9197;</button>
+            </div>
+
+            <div id="gameMoveList" class="game-move-list"></div>
+
+            <div id="gameSummary" class="game-summary" style="display:none;">
+              <h3>Game Summary</h3>
+              <div id="gameSummaryContent"></div>
+            </div>
+          </div>
+
+          <!-- Tab: Move Explorer -->
+          <div id="tab-explorer" class="tab-content">
+            <div class="section-header">
+              <h2>Evaluate Every Legal Move</h2>
+              <div class="inline-controls">
+                <label>Time/move (ms)
+                  <select id="movetimeSelect">
+                    <option>50</option>
+                    <option>80</option>
+                    <option selected>120</option>
+                    <option>250</option>
+                    <option>500</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+            <button id="analyzeAllMovesBtn" class="btn-primary">&#9881; Run All-Moves Explorer</button>
+
+            <div id="explorerProgress" class="game-progress" style="display:none;">
+              <div class="progress-bar"><div id="explorerProgressFill" class="progress-fill"></div></div>
+              <span id="explorerProgressText">Evaluating moves...</span>
+            </div>
+
+            <div id="pieceBadges" class="badge-grid"></div>
+
+            <div class="explorer-filters" style="display:none;" id="explorerFilters">
+              <label>Filter:
+                <select id="filterPiece">
+                  <option value="">All moves</option>
+                  <option value="captures">Captures</option>
+                  <option value="checks">Checks</option>
+                </select>
+              </label>
+              <label>Sort:
+                <select id="sortMoves">
+                  <option value="eval">By Evaluation</option>
+                  <option value="delta">By Delta from Best</option>
+                  <option value="piece">By Piece</option>
+                </select>
+              </label>
+            </div>
+
+            <div id="allMovesTable" class="all-moves-table"></div>
+          </div>
+
+          <!-- Tab: Opening -->
+          <div id="tab-opening" class="tab-content">
+            <div class="section-header">
+              <h2>Opening Discovery</h2>
+            </div>
+            <button id="openingBtn" class="btn-primary">&#128214; Detect Opening</button>
+            <div id="openingResult" class="opening-result">
+              <div class="placeholder-text">Play some moves or load a FEN, then click to detect the opening.</div>
+            </div>
+            <div id="openingContinuations" class="opening-continuations"></div>
+          </div>
         </section>
       </main>
     </div>

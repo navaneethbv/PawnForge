@@ -145,7 +145,13 @@ function classify(deltaCp) {
   return { key: 'blunder', label: 'Blunder' };
 }
 
-// ── Format eval for display ──
+// ── Convert side-to-move eval to White-relative eval ──
+function toWhiteRelativeEval(evalCp, fen) {
+  const turn = fen.split(' ')[1];
+  return turn === 'b' ? -evalCp : evalCp;
+}
+
+// ── Format eval for display (expects White-relative cp) ──
 function formatEval(cp) {
   if (Math.abs(cp) >= 100000) return cp > 0 ? '#' : '-#';
   const val = (cp / 100).toFixed(2);
@@ -163,9 +169,12 @@ async function analyzePosition() {
       settings: { depth, multiPv }
     });
 
+    // Convert evals to White-relative for display
+    const fen = game.fen();
+
     // Update eval bar
     if (data.topMoves && data.topMoves.length > 0) {
-      updateEvalBar(data.bestEvalCp);
+      updateEvalBar(toWhiteRelativeEval(data.bestEvalCp, fen));
     }
 
     // Render top moves summary
@@ -174,11 +183,11 @@ async function analyzePosition() {
       const summary = document.createElement('div');
       summary.style.cssText = 'display:flex; gap:0.5rem; flex-wrap:wrap; margin-bottom:0.5rem;';
       data.topMoves.forEach((m) => {
-        const evalVal = m.evalCp;
-        const cls = evalVal >= 0 ? 'white-advantage' : 'black-advantage';
+        const whiteEval = toWhiteRelativeEval(m.evalCp, fen);
+        const cls = whiteEval >= 0 ? 'white-advantage' : 'black-advantage';
         const badge = document.createElement('span');
         badge.className = `pv-eval ${cls}`;
-        badge.textContent = `${m.uci.substring(0, 4)} ${formatEval(evalVal)}`;
+        badge.textContent = `${m.uci.substring(0, 4)} ${formatEval(whiteEval)}`;
         badge.style.cursor = 'default';
         badge.style.fontSize = '0.82rem';
         summary.appendChild(badge);
@@ -196,10 +205,11 @@ async function analyzePosition() {
       rank.className = 'pv-rank';
       rank.textContent = `#${i + 1}`;
 
+      const whiteEval = toWhiteRelativeEval(m.evalCp, fen);
       const evalEl = document.createElement('span');
-      const cls = m.evalCp >= 0 ? 'white-advantage' : 'black-advantage';
+      const cls = whiteEval >= 0 ? 'white-advantage' : 'black-advantage';
       evalEl.className = `pv-eval ${cls}`;
-      evalEl.textContent = formatEval(m.evalCp);
+      evalEl.textContent = formatEval(whiteEval);
 
       const moves = document.createElement('span');
       moves.className = 'pv-moves';

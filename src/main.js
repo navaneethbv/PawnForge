@@ -483,7 +483,8 @@ function drawEvalGraph(plies, activePly = -1) {
   ctx.moveTo(pad.left, midY);
   plies.forEach((p, i) => {
     const x = pad.left + i * xStep;
-    const evalClamped = clamp(p.evalCp);
+    const whiteEval = toWhiteRelativeEval(p.evalCp, p.fen);
+    const evalClamped = clamp(whiteEval);
     const y = midY - (evalClamped / maxEval) * (gh / 2);
     if (i === 0) ctx.lineTo(x, y);
     else ctx.lineTo(x, y);
@@ -497,7 +498,8 @@ function drawEvalGraph(plies, activePly = -1) {
   ctx.beginPath();
   plies.forEach((p, i) => {
     const x = pad.left + i * xStep;
-    const evalClamped = clamp(p.evalCp);
+    const whiteEval = toWhiteRelativeEval(p.evalCp, p.fen);
+    const evalClamped = clamp(whiteEval);
     const y = midY - (evalClamped / maxEval) * (gh / 2);
     if (i === 0) ctx.moveTo(x, y);
     else ctx.lineTo(x, y);
@@ -510,7 +512,8 @@ function drawEvalGraph(plies, activePly = -1) {
   plies.forEach((p, i) => {
     if (!p.category) return;
     const x = pad.left + i * xStep;
-    const evalClamped = clamp(p.evalCp);
+    const whiteEval = toWhiteRelativeEval(p.evalCp, p.fen);
+    const evalClamped = clamp(whiteEval);
     const y = midY - (evalClamped / maxEval) * (gh / 2);
 
     if (p.category.key === 'mistake' || p.category.key === 'blunder') {
@@ -786,10 +789,23 @@ function applyExplorerFilters() {
   } else if (sortVal === 'piece') {
     const fen = game.fen();
     const order = { k: 0, q: 1, r: 2, b: 3, n: 4, p: 5 };
+    
+    // Precompute the moving piece type for each move using a single Chess instance
+    const chess = new Chess(fen);
+    const pieceCache = {};
+    for (const m of filtered) {
+      if (!m.uci || pieceCache[m.uci]) continue;
+      const fromSquare = m.uci.slice(0, 2);
+      const piece = chess.get(fromSquare);
+      pieceCache[m.uci] = piece ? piece.type : undefined;
+    }
+
     filtered.sort((a, b) => {
-      const pieceA = getPieceAtSquare(fen, a.uci).type;
-      const pieceB = getPieceAtSquare(fen, b.uci).type;
-      if (pieceA !== pieceB) return (order[pieceA] ?? 99) - (order[pieceB] ?? 99);
+      const pieceA = pieceCache[a.uci];
+      const pieceB = pieceCache[b.uci];
+      if (pieceA !== pieceB) {
+        return (order[pieceA] ?? 99) - (order[pieceB] ?? 99);
+      }
       return (b.evalCp || 0) - (a.evalCp || 0);
     });
   }

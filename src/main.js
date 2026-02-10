@@ -915,6 +915,8 @@ function bindUI() {
     boardFlipped = !boardFlipped;
     // Re-render any active overlays with new orientation
     if (allMovesResult.length > 0) renderBoardBadges(allMovesResult, game.fen());
+    // Clear any existing square highlights so they don't appear in the wrong orientation
+    clearSquareHighlights();
   });
 
   document.getElementById('resetBtn').addEventListener('click', () => {

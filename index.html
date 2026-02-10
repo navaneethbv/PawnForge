@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PawnForge</title>
+    <link rel="stylesheet" href="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css" integrity="sha384-q94+BZz+4fV+V6fP5A2nT9jM6m6wG2z2itV6Qn8q6I4J2Q0f3J0h3mzt8V+f5r4x" crossorigin="anonymous">
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header class="topbar">
+        <h1>♟️ PawnForge</h1>
+        <p>Modern chess analysis + training in one workspace</p>
+      </header>
+
+      <main class="layout">
+        <section class="panel board-panel">
+          <div id="board"></div>
+          <div class="board-controls">
+            <button id="flipBtn">Flip Board</button>
+            <button id="resetBtn">Reset Position</button>
+            <button id="copyFenBtn">Copy FEN</button>
+          </div>
+        </section>
+
+        <section class="panel analysis-panel">
+          <h2>Engine Analysis</h2>
+          <div class="analysis-controls">
+            <label for="depthSelect">Depth</label>
+            <select id="depthSelect">
+              <option value="10">10</option>
+              <option value="12" selected>12</option>
+              <option value="15">15</option>
+            </select>
+            <button id="analyzeBtn">Analyze</button>
+          </div>
+          <p id="engineStatus">Engine idle.</p>
+          <pre id="engineOutput">No analysis yet.</pre>
+
+          <h2>Training</h2>
+          <div class="analysis-controls">
+            <button id="newPuzzleBtn">New Puzzle</button>
+            <button id="showHintBtn">Show Hint</button>
+          </div>
+          <p id="puzzleInfo">Click “New Puzzle” to begin.</p>
+        </section>
+
+        <section class="panel moves-panel">
+          <h2>Move List</h2>
+          <ol id="moveList"></ol>
+        </section>
+      </main>
+    </div>
+
+    <script src="https://code.jquery.com/jquery-3.5.1.min.js"></script>
+    <script src="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js"></script>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

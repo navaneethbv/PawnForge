@@ -1,0 +1,9 @@
+{
+  "name": "pawnforge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "PawnForge — modern chess analysis and training platform",
+  "scripts": {
+    "serve": "python3 -m http.server 4173"
+  }
+}

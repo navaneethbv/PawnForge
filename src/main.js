@@ -4,6 +4,7 @@ import { Chess } from 'https://cdn.jsdelivr.net/npm/chess.js@1.1.0/+esm';
 const game = new Chess();
 let board;
 let allMovesResult = [];
+let allMovesResultFen = null;
 let gameReviewData = null;
 let gameReviewPly = -1;
 let gameReviewFens = [];
@@ -393,6 +394,7 @@ function runAllMoves() {
 
     if (data.type === 'final') {
       allMovesResult = data.result.moves;
+      allMovesResultFen = currentFen;
 
       // Add SAN notation to moves
       const tmpGame = new Chess(currentFen);
@@ -784,7 +786,7 @@ function applyExplorerFilters() {
   if (sortVal === 'delta') {
     filtered.sort((a, b) => (a.deltaCp || 0) - (b.deltaCp || 0));
   } else if (sortVal === 'piece') {
-    const fen = game.fen();
+    const fen = allMovesResultFen || game.fen();
     const order = { k: 0, q: 1, r: 2, b: 3, n: 4, p: 5 };
 
     // Precompute the moving piece type for each move using a single Chess instance

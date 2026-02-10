@@ -1,7 +1,7 @@
 import http from 'node:http';
 import os from 'node:os';
 import { createReadStream, existsSync } from 'node:fs';
-import { extname, join, normalize } from 'node:path';
+import { extname, join, normalize, resolve } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 
 const PORT = Number(process.env.PORT || 4173);
@@ -306,7 +306,13 @@ async function handleApi(req, res) {
 function serveStatic(req, res) {
   const reqPath = req.url === '/' ? '/index.html' : req.url.split('?')[0];
   const normalized = normalize(reqPath).replace(/^\.+(\/|\\)/, '');
-  const filePath = join(ROOT, normalized);
+  const filePath = resolve(join(ROOT, normalized));
+  
+  if (!filePath.startsWith(ROOT)) {
+    res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('Forbidden');
+    return;
+  }
   
   if (!existsSync(filePath)) {
     res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });

@@ -789,7 +789,7 @@ function applyExplorerFilters() {
   } else if (sortVal === 'piece') {
     const fen = game.fen();
     const order = { k: 0, q: 1, r: 2, b: 3, n: 4, p: 5 };
-    
+
     // Precompute the moving piece type for each move using a single Chess instance
     const chess = new Chess(fen);
     const pieceCache = {};

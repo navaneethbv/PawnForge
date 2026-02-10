@@ -307,11 +307,17 @@ function serveStatic(req, res) {
   const reqPath = req.url === '/' ? '/index.html' : req.url.split('?')[0];
   const normalized = normalize(reqPath).replace(/^\.+(\/|\\)/, '');
   const filePath = join(ROOT, normalized);
+  
+  if (!existsSync(filePath)) {
+    res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('Not found');
+    return;
+  }
+  
   const ext = extname(filePath);
   res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream' });
   createReadStream(filePath).on('error', () => {
-    res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
-    res.end('Not found');
+    res.end();
   }).pipe(res);
 }
 

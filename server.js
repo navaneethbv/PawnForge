@@ -317,6 +317,7 @@ function serveStatic(req, res) {
   const ext = extname(filePath);
   res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream' });
   createReadStream(filePath).on('error', (err) => {
+    console.error(`Error serving ${filePath}:`, err.message);
     if (!res.headersSent) {
       res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
       res.end('Internal server error');

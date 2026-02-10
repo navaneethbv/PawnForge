@@ -316,8 +316,13 @@ function serveStatic(req, res) {
   
   const ext = extname(filePath);
   res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream' });
-  createReadStream(filePath).on('error', () => {
-    res.end();
+  createReadStream(filePath).on('error', (err) => {
+    if (!res.headersSent) {
+      res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('Internal server error');
+    } else {
+      res.end();
+    }
   }).pipe(res);
 }
 

@@ -83,17 +83,41 @@ class EngineWorker {
   }
 
   async waitFor(predicate, timeoutMs = 4000) {
-    const start = Date.now();
-    while (Date.now() - start < timeoutMs) {
+    const deadline = Date.now() + timeoutMs;
+    // Keep checking for a matching line until we either find one or hit the timeout.
+    // Each wait for new data is raced against the remaining timeout to avoid hanging indefinitely.
+    // Any waiter registered for this call is removed on timeout to avoid leaks.
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
       const idx = this.lines.findIndex(predicate);
       if (idx !== -1) {
         const matched = this.lines[idx];
         this.lines = this.lines.slice(idx + 1);
         return matched;
       }
-      await new Promise((resolve) => this.waiters.push(resolve));
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) {
+        throw new Error('Engine timeout');
+      }
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          const i = this.waiters.indexOf(waiter);
+          if (i !== -1) {
+            this.waiters.splice(i, 1);
+          }
+          reject(new Error('Engine timeout'));
+        }, remaining);
+        const waiter = () => {
+          clearTimeout(timer);
+          const i = this.waiters.indexOf(waiter);
+          if (i !== -1) {
+            this.waiters.splice(i, 1);
+          }
+          resolve();
+        };
+        this.waiters.push(waiter);
+      });
     }
-    throw new Error('Engine timeout');
   }
 
   async ensureReady() {

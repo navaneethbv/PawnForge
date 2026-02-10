@@ -634,7 +634,8 @@ function renderGameMoveList(data, hist) {
     moveEl.className = `game-move cat-${p.category.key}`;
     moveEl.textContent = p.san;
     moveEl.dataset.ply = i;
-    moveEl.title = `${formatEval(p.evalCp)} (${p.category.label}, delta: ${(p.deltaCp / 100).toFixed(2)})`;
+    const whiteEval = toWhiteRelativeEval(p.evalCp, p.fen);
+    moveEl.title = `${formatEval(whiteEval)} (${p.category.label}, delta: ${(p.deltaCp / 100).toFixed(2)})`;
 
     moveEl.addEventListener('click', () => {
       navigateToGamePly(i);
@@ -656,7 +657,7 @@ function navigateToGamePly(ply) {
   el.fenInput.value = fen;
 
   // Update eval bar
-  updateEvalBar(gameReviewData.plies[ply].evalCp);
+  updateEvalBar(toWhiteRelativeEval(gameReviewData.plies[ply].evalCp, fen));
 
   // Highlight active move
   document.querySelectorAll('.game-move').forEach((m) => m.classList.remove('active'));
@@ -776,14 +777,21 @@ function applyExplorerFilters() {
   if (filterVal === 'captures') {
     filtered = filtered.filter((m) => m.flags && m.flags.includes('c'));
   } else if (filterVal === 'checks') {
-    filtered = filtered.filter((m) => m.san && m.san.includes('+'));
+    filtered = filtered.filter((m) => m.san && (m.san.includes('+') || m.san.includes('#')));
   }
 
   const sortVal = el.sortMoves.value;
   if (sortVal === 'delta') {
     filtered.sort((a, b) => (a.deltaCp || 0) - (b.deltaCp || 0));
   } else if (sortVal === 'piece') {
-    filtered.sort((a, b) => (a.uci[0] < b.uci[0] ? -1 : 1));
+    const fen = game.fen();
+    const order = { k: 0, q: 1, r: 2, b: 3, n: 4, p: 5 };
+    filtered.sort((a, b) => {
+      const pieceA = getPieceAtSquare(fen, a.uci).type;
+      const pieceB = getPieceAtSquare(fen, b.uci).type;
+      if (pieceA !== pieceB) return (order[pieceA] ?? 99) - (order[pieceB] ?? 99);
+      return (b.evalCp || 0) - (a.evalCp || 0);
+    });
   }
   // default 'eval' is already sorted
 

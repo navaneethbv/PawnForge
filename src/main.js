@@ -72,20 +72,20 @@ function renderAllMoves(moves) {
   const rows = filtered.map((m, idx) => `${idx + 1}. ${m.uci} eval ${(m.evalCp / 100).toFixed(2)} Δ${(m.deltaCp / 100).toFixed(2)} ${m.category.label}`);
   el.allMovesOutput.textContent = rows.join('\n');
 
-  const bestByPiece = new Map();
+  const bestByFile = new Map();
   moves.forEach((m) => {
-    const piece = m.uci[0];
-    if (!bestByPiece.has(piece)) bestByPiece.set(piece, m);
+    const file = m.uci[0];
+    if (!bestByFile.has(file)) bestByFile.set(file, m);
   });
 
   el.pieceBadges.innerHTML = '';
-  [...bestByPiece.entries()].forEach(([piece, move]) => {
+  [...bestByFile.entries()].forEach(([file, move]) => {
     const btn = document.createElement('button');
     btn.className = `badge ${move.category.key}`;
-    btn.textContent = `${piece.toUpperCase()}: ${move.uci} (${move.category.label})`;
+    btn.textContent = `${file.toUpperCase()}: ${move.uci} (${move.category.label})`;
     btn.addEventListener('click', () => {
-      const perPiece = moves.filter((m) => m.uci.startsWith(piece));
-      el.pieceMoves.textContent = perPiece.map((m) => `${m.uci}  ${(m.evalCp / 100).toFixed(2)}  ${m.category.label}`).join('\n');
+      const perFile = moves.filter((m) => m.uci.startsWith(file));
+      el.pieceMoves.textContent = perFile.map((m) => `${m.uci}  ${(m.evalCp / 100).toFixed(2)}  ${m.category.label}`).join('\n');
     });
     el.pieceBadges.appendChild(btn);
   });
@@ -125,8 +125,10 @@ async function analyzeGame() {
     const hist = replay.history({ verbose: true });
 
     const fenSequence = [];
+    const preMoveSequence = [];
     const cursor = new Chess();
     hist.forEach((mv) => {
+      preMoveSequence.push(cursor.fen());
       cursor.move(mv);
       fenSequence.push(cursor.fen());
     });
@@ -134,6 +136,7 @@ async function analyzeGame() {
     const data = await postJson('/api/analyze/game', {
       pgn: el.pgnInput.value,
       fenSequence,
+      preMoveSequence,
       settings: { depth: Number(document.getElementById('depthSelect').value) }
     });
 

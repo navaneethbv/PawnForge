@@ -1,13 +1,14 @@
 import http from 'node:http';
 import os from 'node:os';
 import { createReadStream, existsSync } from 'node:fs';
-import { extname, join, normalize } from 'node:path';
+import { extname, join, normalize, resolve, sep } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 
 const PORT = Number(process.env.PORT || 4173);
-const ROOT = process.cwd();
+const ROOT = resolve(process.cwd());
 const STOCKFISH_BIN = process.env.STOCKFISH_BIN || (existsSync('/usr/games/stockfish') ? '/usr/games/stockfish' : 'stockfish');
-const ENGINE_AVAILABLE = spawnSync(STOCKFISH_BIN, ['-h'], { stdio: 'ignore' }).status !== null;
+const ENGINE_CHECK = spawnSync(STOCKFISH_BIN, ['-h'], { stdio: 'ignore' });
+const ENGINE_AVAILABLE = ENGINE_CHECK.status === 0 && !ENGINE_CHECK.error;
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -16,7 +17,44 @@ const MIME = {
   '.json': 'application/json; charset=utf-8'
 };
 
-const cache = new Map();
+// LRU cache with size limit and TTL
+class LRUCache {
+  constructor(maxSize = 500, ttlMs = 3600000) {
+    this.maxSize = maxSize;
+    this.ttlMs = ttlMs;
+    this.cache = new Map();
+  }
+
+  get(key) {
+    const entry = this.cache.get(key);
+    if (!entry) return undefined;
+    if (Date.now() - entry.timestamp > this.ttlMs) {
+      this.cache.delete(key);
+      return undefined;
+    }
+    // Move to end (most recently used)
+    this.cache.delete(key);
+    this.cache.set(key, entry);
+    return entry.value;
+  }
+
+  set(key, value) {
+    // Remove oldest if at capacity
+    if (this.cache.size >= this.maxSize && !this.cache.has(key)) {
+      const firstKey = this.cache.keys().next().value;
+      this.cache.delete(firstKey);
+    }
+    // Update existing or add new
+    this.cache.delete(key);
+    this.cache.set(key, { value, timestamp: Date.now() });
+  }
+
+  has(key) {
+    return this.get(key) !== undefined;
+  }
+}
+
+const cache = new LRUCache();
 const openingBook = [
   { line: ['e4', 'e5', 'Nf3', 'Nc6'], eco: 'C50', name: 'Italian Game' },
   { line: ['e4', 'c5'], eco: 'B20', name: 'Sicilian Defence' },
@@ -229,18 +267,38 @@ function sendJson(res, status, data) {
   res.end(JSON.stringify(data));
 }
 
-function parseBody(req) {
+function parseBody(req, maxBytes = 10 * 1024 * 1024) {
   return new Promise((resolve, reject) => {
     let raw = '';
-    req.on('data', (d) => (raw += d));
-    req.on('end', () => {
+    let bytes = 0;
+    let destroyed = false;
+
+    const onData = (d) => {
+      if (destroyed) return;
+      bytes += d.length;
+      if (bytes > maxBytes) {
+        destroyed = true;
+        req.removeListener('data', onData);
+        req.removeListener('end', onEnd);
+        req.destroy();
+        reject(new Error('Request body too large'));
+        return;
+      }
+      raw += d;
+    };
+
+    const onEnd = () => {
+      if (destroyed) return;
       if (!raw) return resolve({});
       try {
         resolve(JSON.parse(raw));
       } catch (e) {
         reject(e);
       }
-    });
+    };
+
+    req.on('data', onData);
+    req.on('end', onEnd);
   });
 }
 
@@ -265,8 +323,16 @@ async function handleApi(req, res) {
         Connection: 'keep-alive'
       });
 
+      let clientDisconnected = false;
+      req.on('close', () => {
+        clientDisconnected = true;
+      });
+
       const rows = [];
       for (let i = 0; i < legal.length; i += 1) {
+        if (clientDisconnected) {
+          return; // Stop processing if client disconnected
+        }
         const move = legal[i];
         const evalCp = await pool.evaluateMove(fen, move, movetime);
         const row = { uci: move, evalCp };
@@ -289,19 +355,36 @@ async function handleApi(req, res) {
       const body = await parseBody(req);
       const moves = parsePgnMoves(body.pgn || '');
       const fenSequence = body.fenSequence || [];
+      const preMoveSequence = body.preMoveSequence || [];
       if (!fenSequence.length) {
         return sendJson(res, 400, { error: 'fenSequence is required for game analysis in this deployment.' });
       }
 
       const plies = [];
-      let prevBest = 0;
       for (let i = 0; i < fenSequence.length; i += 1) {
         const fen = fenSequence[i];
-        const pos = await pool.analyzePosition({ fen, depth: body.settings?.depth ?? 10, multipv: 1 });
-        const evalCp = pos.bestEvalCp;
-        const deltaCp = i === 0 ? 0 : Math.abs(evalCp - prevBest);
-        plies.push({ ply: i + 1, san: moves[i] || `ply-${i + 1}`, fen, evalCp, deltaCp, category: classify(deltaCp) });
-        prevBest = evalCp;
+        const postMoveAnalysis = await pool.analyzePosition({ fen, depth: body.settings?.depth ?? 10, multipv: 1 });
+        const evalAfterMove = postMoveAnalysis.bestEvalCp;
+
+        let deltaCp = 0;
+        if (i > 0 && preMoveSequence[i]) {
+          // Analyze position BEFORE this move was played
+          const preMoveAnalysis = await pool.analyzePosition({ fen: preMoveSequence[i], depth: body.settings?.depth ?? 10, multipv: 1 });
+          const bestBeforeMove = preMoveAnalysis.bestEvalCp;
+          // Centipawn loss calculation:
+          // evalAfterMove is from opponent's perspective (negated relative to the player who moved),
+          // so bestBeforeMove + evalAfterMove correctly measures the centipawn loss
+          deltaCp = Math.max(0, bestBeforeMove + evalAfterMove);
+        }
+
+        plies.push({
+          ply: i + 1,
+          san: moves[i] || `ply-${i + 1}`,
+          fen,
+          evalCp: evalAfterMove,
+          deltaCp,
+          category: classify(deltaCp)
+        });
       }
 
       const turningPoints = plies.filter((p) => p.deltaCp >= 150);
@@ -329,14 +412,45 @@ async function handleApi(req, res) {
 
 function serveStatic(req, res) {
   const reqPath = req.url === '/' ? '/index.html' : req.url.split('?')[0];
-  const normalized = normalize(reqPath).replace(/^\.+(\/|\\)/, '');
-  const filePath = join(ROOT, normalized);
+
+  // Decode URI components and resolve to absolute path safely
+  let decoded;
+  try {
+    decoded = decodeURIComponent(reqPath);
+  } catch (err) {
+    res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('Bad Request: Invalid URL encoding');
+    return;
+  }
+
+  // Strip leading slashes so resolve(ROOT, ...) cannot treat the request as an absolute path
+  const normalized = decoded.replace(/^\/+/, '');
+  const filePath = resolve(ROOT, normalized);
+
+  // Verify resolved path stays within ROOT directory
+  // Check that filePath starts with ROOT followed by separator (or is exactly ROOT)
+  const rootWithSep = ROOT.endsWith(sep) ? ROOT : ROOT + sep;
+  if (filePath !== ROOT && !filePath.startsWith(rootWithSep)) {
+    res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('Forbidden');
+    return;
+  }
+
   const ext = extname(filePath);
-  res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream' });
-  createReadStream(filePath).on('error', () => {
-    res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+  const stream = createReadStream(filePath);
+
+  stream.on('open', () => {
+    res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream' });
+    stream.pipe(res);
+  });
+
+  stream.on('error', (err) => {
+    console.error(`Error serving ${reqPath.replace(/[\r\n]/g, '')}:`, err.message);
+    if (!res.headersSent) {
+      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+    }
     res.end('Not found');
-  }).pipe(res);
+  });
 }
 
 http.createServer((req, res) => {
@@ -345,3 +459,4 @@ http.createServer((req, res) => {
 }).listen(PORT, () => {
   console.log(`PawnForge running at http://localhost:${PORT} | stockfish=${pool.enabled ? 'on' : 'off'}`);
 });
+

@@ -1,7 +1,7 @@
 import http from 'node:http';
 import os from 'node:os';
 import { createReadStream, existsSync } from 'node:fs';
-import { extname, join, normalize, resolve } from 'node:path';
+import { extname, join, normalize, resolve, sep } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 
 const PORT = Number(process.env.PORT || 4173);
@@ -360,8 +360,9 @@ async function handleApi(req, res) {
           // Analyze position BEFORE this move was played
           const preMoveAnalysis = await pool.analyzePosition({ fen: preMoveSequence[i], depth: body.settings?.depth ?? 10, multipv: 1 });
           const bestBeforeMove = preMoveAnalysis.bestEvalCp;
-          // Centipawn loss: best eval before move minus eval after played move (accounting for perspective flip)
-          deltaCp = Math.max(0, bestBeforeMove - (-evalAfterMove));
+          // Centipawn loss: best eval before move plus eval after played move
+          // (evalAfterMove is negated because perspective flips after each move)
+          deltaCp = Math.max(0, bestBeforeMove + evalAfterMove);
         }
         
         plies.push({ 
@@ -399,13 +400,12 @@ async function handleApi(req, res) {
 
 function serveStatic(req, res) {
   const reqPath = req.url === '/' ? '/index.html' : req.url.split('?')[0];
-  // Decode URI components and normalize path
+  // Decode URI components and resolve to absolute path
   const decoded = decodeURIComponent(reqPath);
-  const normalized = normalize(decoded).replace(/^(\.\.?(\/|\\))+/, '');
-  const filePath = resolve(ROOT, normalized);
+  const filePath = resolve(ROOT, decoded);
   
-  // Verify resolved path stays within ROOT directory
-  if (!filePath.startsWith(ROOT)) {
+  // Verify resolved path stays within ROOT directory (with separator to prevent prefix attacks)
+  if (!filePath.startsWith(ROOT + sep)) {
     res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
     res.end('Forbidden');
     return;

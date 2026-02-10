@@ -423,7 +423,7 @@ function serveStatic(req, res) {
     return;
   }
   
-  // Remove leading slash and resolve relative to ROOT
+  // Strip leading slashes so resolve(ROOT, ...) cannot treat the request as an absolute path
   const normalized = decoded.replace(/^\/+/, '');
   const filePath = resolve(ROOT, normalized);
   

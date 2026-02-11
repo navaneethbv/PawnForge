@@ -31,10 +31,27 @@
         <section class="panel board-panel">
           <div class="board-wrapper">
             <div id="evalBar" class="eval-bar">
-              <div id="evalBarFill" class="eval-bar-fill"></div>
+              <div class="eval-bar-track">
+                <div id="evalBarSegTop" class="eval-bar-segment eval-bar-segment-top" style="background:var(--black-eval); transform: scaleY(0.5); transform-origin: top;"></div>
+                <div id="evalBarSegBot" class="eval-bar-segment eval-bar-segment-bottom" style="background:var(--white-eval); transform: scaleY(0.5); transform-origin: bottom;"></div>
+                <div class="eval-bar-center-line"></div>
+              </div>
               <span id="evalBarLabel" class="eval-bar-label">0.0</span>
             </div>
-            <div id="board"></div>
+            <div class="board-container">
+              <div id="board"></div>
+              <div id="boardBadgeOverlay" class="board-badge-overlay"></div>
+              <div id="boardSquareHighlights" class="board-square-highlights"></div>
+            </div>
+          </div>
+
+          <div id="evalInfo" class="eval-info">
+            <span id="evalDisplay" class="eval-display">0.00</span>
+            <span class="eval-wdl">
+              W <span id="wdlW">50.0</span>%
+              D <span id="wdlD">0.0</span>%
+              L <span id="wdlL">50.0</span>%
+            </span>
           </div>
 
           <div class="board-controls">

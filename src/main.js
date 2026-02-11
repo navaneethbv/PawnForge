@@ -27,8 +27,15 @@ const el = {
   pvLines: document.getElementById('pvLines'),
   allMovesTable: document.getElementById('allMovesTable'),
   pieceBadges: document.getElementById('pieceBadges'),
-  evalBarFill: document.getElementById('evalBarFill'),
   evalBarLabel: document.getElementById('evalBarLabel'),
+  evalBarSegTop: document.getElementById('evalBarSegTop'),
+  evalBarSegBot: document.getElementById('evalBarSegBot'),
+  evalDisplay: document.getElementById('evalDisplay'),
+  wdlW: document.getElementById('wdlW'),
+  wdlD: document.getElementById('wdlD'),
+  wdlL: document.getElementById('wdlL'),
+  boardBadgeOverlay: document.getElementById('boardBadgeOverlay'),
+  boardSquareHighlights: document.getElementById('boardSquareHighlights'),
   evalGraph: document.getElementById('evalGraph'),
   evalGraphContainer: document.getElementById('evalGraphContainer'),
   gameMoveList: document.getElementById('gameMoveList'),
@@ -48,21 +55,119 @@ const el = {
   sortMoves: document.getElementById('sortMoves')
 };
 
+// ── Board orientation tracking ──
+let boardFlipped = false;
+
 // ── Engine status ──
 function setEngineStatus(text, state = 'idle') {
   el.status.innerHTML = `<span class="dot"></span> ${text}`;
   el.status.className = 'engine-indicator' + (state === 'active' ? ' active' : state === 'error' ? ' error' : '');
 }
 
-// ── Eval bar ──
+// ── Win/Draw/Loss from centipawns (logistic model) ──
+function cpToWDL(cp) {
+  // Approximate WDL using a logistic curve
+  // Based on Lichess WDL model parameters
+  const K = -0.00368208;
+  const winP = 1 / (1 + Math.exp(K * cp * 100 / 100));
+  // Draw probability peaks near 0 eval
+  const drawBase = Math.max(0, 0.5 - Math.abs(cp) / 1200);
+  const w = Math.max(0, Math.min(1, winP - drawBase / 2));
+  const l = Math.max(0, Math.min(1, (1 - winP) - drawBase / 2));
+  const d = Math.max(0, 1 - w - l);
+  return { w: w * 100, d: d * 100, l: l * 100 };
+}
+
+// ── Eval bar (GPU-accelerated with scaleY) ──
 function updateEvalBar(evalCp) {
   const clamped = Math.max(-1000, Math.min(1000, evalCp));
-  const pct = 50 + (clamped / 1000) * 50;
-  el.evalBarFill.style.height = `${pct}%`;
-  const display = Math.abs(evalCp) >= 100000
+  // White portion (bottom segment): 0.5 = even, 1.0 = white winning
+  const whitePct = 0.5 + (clamped / 1000) * 0.5;
+  const blackPct = 1 - whitePct;
+
+  el.evalBarSegTop.style.transform = `translateZ(0) scaleY(${blackPct.toFixed(4)})`;
+  el.evalBarSegBot.style.transform = `translateZ(0) scaleY(${whitePct.toFixed(4)})`;
+
+  const isMate = Math.abs(evalCp) >= 100000;
+  const display = isMate
     ? (evalCp > 0 ? 'M' : '-M')
     : (evalCp / 100).toFixed(1);
   el.evalBarLabel.textContent = display;
+
+  // Update eval display and W/D/L
+  const evalText = isMate
+    ? (evalCp > 0 ? '#' : '-#')
+    : (evalCp >= 0 ? '+' : '') + (evalCp / 100).toFixed(2);
+  el.evalDisplay.textContent = evalText;
+
+  const wdl = cpToWDL(evalCp);
+  el.wdlW.textContent = wdl.w.toFixed(1);
+  el.wdlD.textContent = wdl.d.toFixed(1);
+  el.wdlL.textContent = wdl.l.toFixed(1);
+}
+
+// ── Board square coordinate helpers ──
+function squareToCoords(sq) {
+  const file = sq.charCodeAt(0) - 97; // a=0, h=7
+  const rank = parseInt(sq[1]) - 1;   // 1=0, 8=7
+  return { file, rank };
+}
+
+function squareToPosition(sq) {
+  const { file, rank } = squareToCoords(sq);
+  if (boardFlipped) {
+    return { left: (7 - file) * 12.5, top: rank * 12.5 };
+  }
+  return { left: file * 12.5, top: (7 - rank) * 12.5 };
+}
+
+// ── On-board eval badges ──
+function renderBoardBadges(moves, fen) {
+  el.boardBadgeOverlay.innerHTML = '';
+  if (!moves || moves.length === 0) return;
+
+  moves.forEach((m) => {
+    const to = m.uci.substring(2, 4);
+    const cat = m.category || classify(m.deltaCp || 0);
+    const pos = squareToPosition(to);
+
+    const badge = document.createElement('div');
+    badge.className = `board-eval-badge cat-${cat.key}`;
+    badge.style.left = `${pos.left}%`;
+    badge.style.top = `${pos.top}%`;
+
+    const label = document.createElement('span');
+    label.className = 'badge-label';
+    const whiteEval = toWhiteRelativeEval(m.evalCp, fen);
+    const evalVal = whiteEval / 100;
+    label.textContent = evalVal >= 0 ? `+${Math.round(evalVal)}` : `${Math.round(evalVal)}`;
+
+    badge.appendChild(label);
+    el.boardBadgeOverlay.appendChild(badge);
+  });
+}
+
+function clearBoardBadges() {
+  el.boardBadgeOverlay.innerHTML = '';
+}
+
+// ── Last-move square highlighting ──
+function highlightLastMove(from, to, category) {
+  el.boardSquareHighlights.innerHTML = '';
+  const cls = category ? `highlight-${category}` : 'highlight-neutral';
+
+  [from, to].forEach((sq) => {
+    const pos = squareToPosition(sq);
+    const div = document.createElement('div');
+    div.className = `board-square-highlight ${cls}`;
+    div.style.left = `${pos.left}%`;
+    div.style.top = `${pos.top}%`;
+    el.boardSquareHighlights.appendChild(div);
+  });
+}
+
+function clearSquareHighlights() {
+  el.boardSquareHighlights.innerHTML = '';
 }
 
 // ── Tab switching ──
@@ -118,6 +223,10 @@ function onDrop(source, target) {
   const move = game.move({ from: source, to: target, promotion: 'q' });
   if (!move) return 'snapback';
   renderMoves();
+  clearBoardBadges();
+  allMovesResult = [];
+  allMovesResultFen = null;
+  highlightLastMove(source, target, null);
   return undefined;
 }
 
@@ -418,6 +527,7 @@ function runAllMoves() {
 
       renderPieceBadges(allMovesResult, currentFen);
       renderMovesTable(allMovesResult);
+      renderBoardBadges(allMovesResult, currentFen);
       el.explorerFilters.style.display = 'flex';
       el.explorerProgress.style.display = 'none';
       setEngineStatus(`All-moves complete (${allMovesResult.length} moves)`, 'idle');
@@ -538,7 +648,8 @@ function drawEvalGraph(plies, activePly = -1) {
     ctx.lineTo(x, pad.top + gh);
     ctx.stroke();
 
-    const evalClamped = clamp(plies[activePly].evalCp);
+    const activeWhiteEval = toWhiteRelativeEval(plies[activePly].evalCp, plies[activePly].fen);
+    const evalClamped = clamp(activeWhiteEval);
     const y = midY - (evalClamped / maxEval) * (gh / 2);
     ctx.beginPath();
     ctx.arc(x, y, 5, 0, Math.PI * 2);
@@ -657,14 +768,25 @@ function navigateToGamePly(ply) {
 
   gameReviewPly = ply;
   const fen = gameReviewFens[ply];
+  const plyData = gameReviewData.plies[ply];
 
   // Update board
   game.load(fen);
   board.position(fen);
   el.fenInput.value = fen;
 
-  // Update eval bar
-  updateEvalBar(toWhiteRelativeEval(gameReviewData.plies[ply].evalCp, fen));
+  // Update eval bar (White-relative)
+  updateEvalBar(toWhiteRelativeEval(plyData.evalCp, fen));
+
+  // Highlight last move squares with category color
+  clearBoardBadges();
+  if (gameReviewPreFens[ply]) {
+    const tmpGame = new Chess(gameReviewPreFens[ply]);
+    const move = tmpGame.move(plyData.san);
+    if (move) {
+      highlightLastMove(move.from, move.to, plyData.category.key);
+    }
+  }
 
   // Highlight active move
   document.querySelectorAll('.game-move').forEach((m) => m.classList.remove('active'));
@@ -793,7 +915,6 @@ function applyExplorerFilters() {
   } else if (sortVal === 'piece') {
     const fen = allMovesResultFen || game.fen();
     const order = { k: 0, q: 1, r: 2, b: 3, n: 4, p: 5 };
-
     // Precompute the moving piece type for each move using a single Chess instance
     const chess = new Chess(fen);
     const pieceCache = {};
@@ -820,19 +941,30 @@ function applyExplorerFilters() {
 
 // ── Bind all UI events ──
 function bindUI() {
-  document.getElementById('flipBtn').addEventListener('click', () => board.flip());
+  document.getElementById('flipBtn').addEventListener('click', () => {
+    board.flip();
+    boardFlipped = !boardFlipped;
+    // Re-render any active overlays with new orientation
+    if (allMovesResult.length > 0) renderBoardBadges(allMovesResult, game.fen());
+    // Clear any existing square highlights so they don't appear in the wrong orientation
+    clearSquareHighlights();
+  });
 
   document.getElementById('resetBtn').addEventListener('click', () => {
     game.reset();
     board.start();
     renderMoves();
     updateEvalBar(0);
+    clearBoardBadges();
+    clearSquareHighlights();
   });
 
   document.getElementById('undoBtn').addEventListener('click', () => {
     game.undo();
     board.position(game.fen());
     renderMoves();
+    clearBoardBadges();
+    clearSquareHighlights();
   });
 
   document.getElementById('loadFenBtn').addEventListener('click', () => {

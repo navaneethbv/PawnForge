@@ -138,7 +138,8 @@ function renderBoardBadges(moves, fen) {
 
     const label = document.createElement('span');
     label.className = 'badge-label';
-    const evalVal = m.evalCp / 100;
+    const whiteEval = toWhiteRelativeEval(m.evalCp, fen);
+    const evalVal = whiteEval / 100;
     label.textContent = evalVal >= 0 ? `+${Math.round(evalVal)}` : `${Math.round(evalVal)}`;
 
     badge.appendChild(label);
@@ -223,6 +224,8 @@ function onDrop(source, target) {
   if (!move) return 'snapback';
   renderMoves();
   clearBoardBadges();
+  allMovesResult = [];
+  allMovesResultFen = null;
   highlightLastMove(source, target, null);
   return undefined;
 }
@@ -912,6 +915,7 @@ function applyExplorerFilters() {
   } else if (sortVal === 'piece') {
     const fen = allMovesResultFen || game.fen();
     const order = { k: 0, q: 1, r: 2, b: 3, n: 4, p: 5 };
+    // Precompute the moving piece type for each move using a single Chess instance
     const chess = new Chess(fen);
     const pieceCache = {};
     for (const m of filtered) {
@@ -920,6 +924,7 @@ function applyExplorerFilters() {
       const piece = chess.get(fromSquare);
       pieceCache[m.uci] = piece ? piece.type : undefined;
     }
+
     filtered.sort((a, b) => {
       const pieceA = pieceCache[a.uci];
       const pieceB = pieceCache[b.uci];

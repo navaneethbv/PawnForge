@@ -4,6 +4,7 @@ import { Chess } from 'https://cdn.jsdelivr.net/npm/chess.js@1.1.0/+esm';
 const game = new Chess();
 let board;
 let allMovesResult = [];
+let allMovesResultFen = null;
 let gameReviewData = null;
 let gameReviewPly = -1;
 let gameReviewFens = [];
@@ -477,6 +478,8 @@ function runAllMoves() {
   el.pieceBadges.innerHTML = '';
   el.allMovesTable.innerHTML = '';
   el.explorerFilters.style.display = 'none';
+  allMovesResult = [];
+  allMovesResultFen = null;
 
   const currentFen = game.fen();
 
@@ -499,6 +502,7 @@ function runAllMoves() {
 
     if (data.type === 'final') {
       allMovesResult = data.result.moves;
+      allMovesResultFen = currentFen;
 
       // Add SAN notation to moves
       const tmpGame = new Chess(currentFen);
@@ -590,7 +594,8 @@ function drawEvalGraph(plies, activePly = -1) {
   ctx.moveTo(pad.left, midY);
   plies.forEach((p, i) => {
     const x = pad.left + i * xStep;
-    const evalClamped = clamp(p.evalCp);
+    const whiteEval = toWhiteRelativeEval(p.evalCp, p.fen);
+    const evalClamped = clamp(whiteEval);
     const y = midY - (evalClamped / maxEval) * (gh / 2);
     if (i === 0) ctx.lineTo(x, y);
     else ctx.lineTo(x, y);
@@ -604,7 +609,8 @@ function drawEvalGraph(plies, activePly = -1) {
   ctx.beginPath();
   plies.forEach((p, i) => {
     const x = pad.left + i * xStep;
-    const evalClamped = clamp(p.evalCp);
+    const whiteEval = toWhiteRelativeEval(p.evalCp, p.fen);
+    const evalClamped = clamp(whiteEval);
     const y = midY - (evalClamped / maxEval) * (gh / 2);
     if (i === 0) ctx.moveTo(x, y);
     else ctx.lineTo(x, y);
@@ -617,7 +623,8 @@ function drawEvalGraph(plies, activePly = -1) {
   plies.forEach((p, i) => {
     if (!p.category) return;
     const x = pad.left + i * xStep;
-    const evalClamped = clamp(p.evalCp);
+    const whiteEval = toWhiteRelativeEval(p.evalCp, p.fen);
+    const evalClamped = clamp(whiteEval);
     const y = midY - (evalClamped / maxEval) * (gh / 2);
 
     if (p.category.key === 'mistake' || p.category.key === 'blunder') {
@@ -638,7 +645,8 @@ function drawEvalGraph(plies, activePly = -1) {
     ctx.lineTo(x, pad.top + gh);
     ctx.stroke();
 
-    const evalClamped = clamp(plies[activePly].evalCp);
+    const activeWhiteEval = toWhiteRelativeEval(plies[activePly].evalCp, plies[activePly].fen);
+    const evalClamped = clamp(activeWhiteEval);
     const y = midY - (evalClamped / maxEval) * (gh / 2);
     ctx.beginPath();
     ctx.arc(x, y, 5, 0, Math.PI * 2);
@@ -741,7 +749,8 @@ function renderGameMoveList(data, hist) {
     moveEl.className = `game-move cat-${p.category.key}`;
     moveEl.textContent = p.san;
     moveEl.dataset.ply = i;
-    moveEl.title = `${formatEval(p.evalCp)} (${p.category.label}, delta: ${(p.deltaCp / 100).toFixed(2)})`;
+    const whiteEval = toWhiteRelativeEval(p.evalCp, p.fen);
+    moveEl.title = `${formatEval(whiteEval)} (${p.category.label}, delta: ${(p.deltaCp / 100).toFixed(2)})`;
 
     moveEl.addEventListener('click', () => {
       navigateToGamePly(i);
@@ -763,8 +772,8 @@ function navigateToGamePly(ply) {
   board.position(fen);
   el.fenInput.value = fen;
 
-  // Update eval bar
-  updateEvalBar(plyData.evalCp);
+  // Update eval bar (White-relative)
+  updateEvalBar(toWhiteRelativeEval(plyData.evalCp, fen));
 
   // Highlight last move squares with category color
   clearBoardBadges();
@@ -894,14 +903,31 @@ function applyExplorerFilters() {
   if (filterVal === 'captures') {
     filtered = filtered.filter((m) => m.flags && m.flags.includes('c'));
   } else if (filterVal === 'checks') {
-    filtered = filtered.filter((m) => m.san && m.san.includes('+'));
+    filtered = filtered.filter((m) => m.san && (m.san.includes('+') || m.san.includes('#')));
   }
 
   const sortVal = el.sortMoves.value;
   if (sortVal === 'delta') {
     filtered.sort((a, b) => (a.deltaCp || 0) - (b.deltaCp || 0));
   } else if (sortVal === 'piece') {
-    filtered.sort((a, b) => (a.uci[0] < b.uci[0] ? -1 : 1));
+    const fen = allMovesResultFen || game.fen();
+    const order = { k: 0, q: 1, r: 2, b: 3, n: 4, p: 5 };
+    const chess = new Chess(fen);
+    const pieceCache = {};
+    for (const m of filtered) {
+      if (!m.uci || pieceCache[m.uci]) continue;
+      const fromSquare = m.uci.slice(0, 2);
+      const piece = chess.get(fromSquare);
+      pieceCache[m.uci] = piece ? piece.type : undefined;
+    }
+    filtered.sort((a, b) => {
+      const pieceA = pieceCache[a.uci];
+      const pieceB = pieceCache[b.uci];
+      if (pieceA !== pieceB) {
+        return (order[pieceA] ?? 99) - (order[pieceB] ?? 99);
+      }
+      return (b.evalCp || 0) - (a.evalCp || 0);
+    });
   }
   // default 'eval' is already sorted
 

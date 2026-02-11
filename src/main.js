@@ -987,18 +987,10 @@ function bindUI() {
     clearBoardBadges();
     clearSquareHighlights();
     // Clear explorer UI state so no stale results remain after FEN change.
-    if (typeof el.pieceBadges !== 'undefined' && el.pieceBadges && el.pieceBadges.innerHTML !== undefined) {
-      el.pieceBadges.innerHTML = '';
-    }
-    if (typeof el.allMovesTable !== 'undefined' && el.allMovesTable && el.allMovesTable.innerHTML !== undefined) {
-      el.allMovesTable.innerHTML = '';
-    }
-    if (typeof el.explorerFilters !== 'undefined' && el.explorerFilters && el.explorerFilters.style) {
-      el.explorerFilters.style.display = 'none';
-    }
-    if (typeof el.explorerProgress !== 'undefined' && el.explorerProgress && el.explorerProgress.style) {
-      el.explorerProgress.style.display = 'none';
-    }
+    if (el.pieceBadges) el.pieceBadges.innerHTML = '';
+    if (el.allMovesTable) el.allMovesTable.innerHTML = '';
+    if (el.explorerFilters) el.explorerFilters.style.display = 'none';
+    if (el.explorerProgress) el.explorerProgress.style.display = 'none';
     allMovesResult = [];
     allMovesResultFen = null;
   });

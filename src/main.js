@@ -57,6 +57,7 @@ const el = {
 
 // ── Board orientation tracking ──
 let boardFlipped = false;
+let lastHighlight = null; // { from, to, category }
 
 // ── Engine status ──
 function setEngineStatus(text, state = 'idle') {
@@ -64,12 +65,12 @@ function setEngineStatus(text, state = 'idle') {
   el.status.className = 'engine-indicator' + (state === 'active' ? ' active' : state === 'error' ? ' error' : '');
 }
 
-// ── Win/Draw/Loss from centipawns (logistic model) ──
+// ── Win/Draw/Loss from centipawns (estimated logistic model) ──
 function cpToWDL(cp) {
-  // Approximate WDL using a logistic curve
+  // Approximate WDL using a logistic curve (not engine-grade, heuristic only)
   // Based on Lichess WDL model parameters
   const K = -0.00368208;
-  const winP = 1 / (1 + Math.exp(K * cp * 100 / 100));
+  const winP = 1 / (1 + Math.exp(K * cp));
   // Draw probability peaks near 0 eval
   const drawBase = Math.max(0, 0.5 - Math.abs(cp) / 1200);
   const w = Math.max(0, Math.min(1, winP - drawBase / 2));
@@ -153,6 +154,7 @@ function clearBoardBadges() {
 
 // ── Last-move square highlighting ──
 function highlightLastMove(from, to, category) {
+  lastHighlight = { from, to, category };
   el.boardSquareHighlights.innerHTML = '';
   const cls = category ? `highlight-${category}` : 'highlight-neutral';
 
@@ -167,6 +169,7 @@ function highlightLastMove(from, to, category) {
 }
 
 function clearSquareHighlights() {
+  lastHighlight = null;
   el.boardSquareHighlights.innerHTML = '';
 }
 
@@ -434,7 +437,8 @@ function renderPieceBadges(moves, fen) {
 
     const evalText = document.createElement('span');
     evalText.className = 'piece-eval';
-    evalText.textContent = `${formatEval(best.evalCp)} (${cat.label})`;
+    const bestWhiteEval = toWhiteRelativeEval(best.evalCp, fen);
+    evalText.textContent = `${formatEval(bestWhiteEval)} (${cat.label})`;
 
     badge.appendChild(icon);
     badge.appendChild(moveText);
@@ -443,7 +447,7 @@ function renderPieceBadges(moves, fen) {
     badge.addEventListener('click', () => {
       document.querySelectorAll('.piece-badge').forEach((b) => b.classList.remove('selected'));
       badge.classList.add('selected');
-      renderMovesTable(pieceMoves);
+      renderMovesTable(pieceMoves, fen);
     });
 
     el.pieceBadges.appendChild(badge);
@@ -451,19 +455,22 @@ function renderPieceBadges(moves, fen) {
 }
 
 // ── Render all-moves table ──
-function renderMovesTable(moves) {
+function renderMovesTable(moves, fen) {
   if (!moves || moves.length === 0) {
     el.allMovesTable.innerHTML = '<div class="placeholder-text">No moves to display.</div>';
     return;
   }
 
+  // Use provided FEN or fall back to allMovesResultFen or current game FEN
+  const fenToUse = fen || allMovesResultFen || game.fen();
   let html = '<table><thead><tr><th>#</th><th>Move</th><th>Eval</th><th>Delta</th><th>Quality</th></tr></thead><tbody>';
   moves.forEach((m, i) => {
     const cat = m.category || classify(m.deltaCp || 0);
+    const whiteEval = toWhiteRelativeEval(m.evalCp, fenToUse);
     html += `<tr>
       <td>${i + 1}</td>
       <td class="move-cell">${m.san || m.uci}</td>
-      <td>${formatEval(m.evalCp)}</td>
+      <td>${formatEval(whiteEval)}</td>
       <td>${m.deltaCp !== undefined ? (m.deltaCp / 100).toFixed(2) : '-'}</td>
       <td><span class="eval-badge ${cat.key}">${cat.label}</span></td>
     </tr>`;
@@ -472,17 +479,23 @@ function renderMovesTable(moves) {
   el.allMovesTable.innerHTML = html;
 }
 
+// ── Clear explorer UI state ──
+function clearExplorerUI() {
+  el.pieceBadges.innerHTML = '';
+  el.allMovesTable.innerHTML = '';
+  el.explorerFilters.style.display = 'none';
+  el.explorerProgress.style.display = 'none';
+  allMovesResult = [];
+  allMovesResultFen = null;
+}
+
 // ── All-moves explorer with streaming ──
 function runAllMoves() {
   setEngineStatus('Evaluating all legal moves...', 'active');
   el.explorerProgress.style.display = 'flex';
   el.explorerProgressFill.style.width = '0%';
   el.explorerProgressText.textContent = 'Starting...';
-  el.pieceBadges.innerHTML = '';
-  el.allMovesTable.innerHTML = '';
-  el.explorerFilters.style.display = 'none';
-  allMovesResult = [];
-  allMovesResultFen = null;
+  clearExplorerUI();
 
   const currentFen = game.fen();
 
@@ -526,7 +539,7 @@ function runAllMoves() {
       });
 
       renderPieceBadges(allMovesResult, currentFen);
-      renderMovesTable(allMovesResult);
+      renderMovesTable(allMovesResult, currentFen);
       renderBoardBadges(allMovesResult, currentFen);
       el.explorerFilters.style.display = 'flex';
       el.explorerProgress.style.display = 'none';
@@ -600,8 +613,7 @@ function drawEvalGraph(plies, activePly = -1) {
     const whiteEval = toWhiteRelativeEval(p.evalCp, p.fen);
     const evalClamped = clamp(whiteEval);
     const y = midY - (evalClamped / maxEval) * (gh / 2);
-    if (i === 0) ctx.lineTo(x, y);
-    else ctx.lineTo(x, y);
+    ctx.lineTo(x, y);
   });
   ctx.lineTo(pad.left + (plies.length - 1) * xStep, midY);
   ctx.closePath();
@@ -931,12 +943,12 @@ function applyExplorerFilters() {
       if (pieceA !== pieceB) {
         return (order[pieceA] ?? 99) - (order[pieceB] ?? 99);
       }
-      return (b.evalCp || 0) - (a.evalCp || 0);
+      return (toWhiteRelativeEval(b.evalCp || 0, fen)) - (toWhiteRelativeEval(a.evalCp || 0, fen));
     });
   }
   // default 'eval' is already sorted
 
-  renderMovesTable(filtered);
+  renderMovesTable(filtered, fen);
 }
 
 // ── Bind all UI events ──
@@ -945,9 +957,11 @@ function bindUI() {
     board.flip();
     boardFlipped = !boardFlipped;
     // Re-render any active overlays with new orientation
-    if (allMovesResult.length > 0) renderBoardBadges(allMovesResult, game.fen());
-    // Clear any existing square highlights so they don't appear in the wrong orientation
-    clearSquareHighlights();
+    if (allMovesResult.length > 0) renderBoardBadges(allMovesResult, allMovesResultFen || game.fen());
+    // Re-project square highlights with new orientation
+    if (lastHighlight) {
+      highlightLastMove(lastHighlight.from, lastHighlight.to, lastHighlight.category);
+    }
   });
 
   document.getElementById('resetBtn').addEventListener('click', () => {
@@ -977,6 +991,10 @@ function bindUI() {
     }
     board.position(game.fen());
     renderMoves();
+    clearBoardBadges();
+    clearSquareHighlights();
+    // Clear explorer UI state so no stale results remain after FEN change.
+    clearExplorerUI();
   });
 
   document.getElementById('copyFenBtn').addEventListener('click', () => {

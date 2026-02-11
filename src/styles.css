@@ -224,6 +224,11 @@ body {
 .eval-wdl span {
   font-weight: 600;
 }
+.eval-wdl .wdl-est {
+  font-weight: 400;
+  font-size: 0.7rem;
+  opacity: 0.6;
+}
 
 /* ── Board Badge Overlay (eval badges on squares) ── */
 .board-badge-overlay {

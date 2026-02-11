@@ -462,6 +462,7 @@ async function handleApi(req, res) {
   try {
     // POST /api/analyze/position
     if (req.method === 'POST' && req.url === '/api/analyze/position') {
+      if (!pool.enabled) return sendJson(res, 503, { error: 'Stockfish unavailable.' });
       const body = await parseBody(req);
       if (!body.fen) return sendJson(res, 400, { error: 'FEN is required' });
       const result = await pool.analyzePosition({
@@ -515,6 +516,7 @@ async function handleApi(req, res) {
 
     // POST /api/analyze/game
     if (req.method === 'POST' && req.url === '/api/analyze/game') {
+      if (!pool.enabled) return sendJson(res, 503, { error: 'Stockfish unavailable.' });
       const body = await parseBody(req);
       const moves = parsePgnMoves(body.pgn || '');
       const fenSequence = body.fenSequence || [];

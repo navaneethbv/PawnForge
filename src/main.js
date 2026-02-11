@@ -447,7 +447,7 @@ function renderPieceBadges(moves, fen) {
     badge.addEventListener('click', () => {
       document.querySelectorAll('.piece-badge').forEach((b) => b.classList.remove('selected'));
       badge.classList.add('selected');
-      renderMovesTable(pieceMoves);
+      renderMovesTable(pieceMoves, fen);
     });
 
     el.pieceBadges.appendChild(badge);
@@ -455,17 +455,17 @@ function renderPieceBadges(moves, fen) {
 }
 
 // ── Render all-moves table ──
-function renderMovesTable(moves) {
+function renderMovesTable(moves, fen) {
   if (!moves || moves.length === 0) {
     el.allMovesTable.innerHTML = '<div class="placeholder-text">No moves to display.</div>';
     return;
   }
 
-  const fen = allMovesResultFen || game.fen();
+  const fenForRender = fen || allMovesResultFen || game.fen();
   let html = '<table><thead><tr><th>#</th><th>Move</th><th>Eval</th><th>Delta</th><th>Quality</th></tr></thead><tbody>';
   moves.forEach((m, i) => {
     const cat = m.category || classify(m.deltaCp || 0);
-    const whiteEval = toWhiteRelativeEval(m.evalCp, fen);
+    const whiteEval = toWhiteRelativeEval(m.evalCp, fenForRender);
     html += `<tr>
       <td>${i + 1}</td>
       <td class="move-cell">${m.san || m.uci}</td>
@@ -532,7 +532,7 @@ function runAllMoves() {
       });
 
       renderPieceBadges(allMovesResult, currentFen);
-      renderMovesTable(allMovesResult);
+      renderMovesTable(allMovesResult, currentFen);
       renderBoardBadges(allMovesResult, currentFen);
       el.explorerFilters.style.display = 'flex';
       el.explorerProgress.style.display = 'none';
@@ -936,13 +936,12 @@ function applyExplorerFilters() {
       if (pieceA !== pieceB) {
         return (order[pieceA] ?? 99) - (order[pieceB] ?? 99);
       }
-      const fenForSort = allMovesResultFen || game.fen();
-      return (toWhiteRelativeEval(b.evalCp || 0, fenForSort)) - (toWhiteRelativeEval(a.evalCp || 0, fenForSort));
+      return (toWhiteRelativeEval(b.evalCp || 0, fen)) - (toWhiteRelativeEval(a.evalCp || 0, fen));
     });
   }
   // default 'eval' is already sorted
 
-  renderMovesTable(filtered);
+  renderMovesTable(filtered, fen);
 }
 
 // ── Bind all UI events ──
@@ -987,6 +986,19 @@ function bindUI() {
     renderMoves();
     clearBoardBadges();
     clearSquareHighlights();
+    // Clear explorer UI state so no stale results remain after FEN change.
+    if (typeof el.pieceBadges !== 'undefined' && el.pieceBadges && el.pieceBadges.innerHTML !== undefined) {
+      el.pieceBadges.innerHTML = '';
+    }
+    if (typeof el.allMovesTable !== 'undefined' && el.allMovesTable && el.allMovesTable.innerHTML !== undefined) {
+      el.allMovesTable.innerHTML = '';
+    }
+    if (typeof el.explorerFilters !== 'undefined' && el.explorerFilters && el.explorerFilters.style) {
+      el.explorerFilters.style.display = 'none';
+    }
+    if (typeof el.explorerProgress !== 'undefined' && el.explorerProgress && el.explorerProgress.style) {
+      el.explorerProgress.style.display = 'none';
+    }
     allMovesResult = [];
     allMovesResultFen = null;
   });

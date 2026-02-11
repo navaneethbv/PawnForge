@@ -461,11 +461,12 @@ function renderMovesTable(moves, fen) {
     return;
   }
 
-  const fenForRender = fen || allMovesResultFen || game.fen();
+  // Use provided FEN or fall back to allMovesResultFen or current game FEN
+  if (!fen) fen = allMovesResultFen || game.fen();
   let html = '<table><thead><tr><th>#</th><th>Move</th><th>Eval</th><th>Delta</th><th>Quality</th></tr></thead><tbody>';
   moves.forEach((m, i) => {
     const cat = m.category || classify(m.deltaCp || 0);
-    const whiteEval = toWhiteRelativeEval(m.evalCp, fenForRender);
+    const whiteEval = toWhiteRelativeEval(m.evalCp, fen);
     html += `<tr>
       <td>${i + 1}</td>
       <td class="move-cell">${m.san || m.uci}</td>
@@ -478,17 +479,23 @@ function renderMovesTable(moves, fen) {
   el.allMovesTable.innerHTML = html;
 }
 
+// ── Clear explorer UI state ──
+function clearExplorerUI() {
+  if (el.pieceBadges) el.pieceBadges.innerHTML = '';
+  if (el.allMovesTable) el.allMovesTable.innerHTML = '';
+  if (el.explorerFilters) el.explorerFilters.style.display = 'none';
+  if (el.explorerProgress) el.explorerProgress.style.display = 'none';
+  allMovesResult = [];
+  allMovesResultFen = null;
+}
+
 // ── All-moves explorer with streaming ──
 function runAllMoves() {
   setEngineStatus('Evaluating all legal moves...', 'active');
   el.explorerProgress.style.display = 'flex';
   el.explorerProgressFill.style.width = '0%';
   el.explorerProgressText.textContent = 'Starting...';
-  el.pieceBadges.innerHTML = '';
-  el.allMovesTable.innerHTML = '';
-  el.explorerFilters.style.display = 'none';
-  allMovesResult = [];
-  allMovesResultFen = null;
+  clearExplorerUI();
 
   const currentFen = game.fen();
 
@@ -987,12 +994,7 @@ function bindUI() {
     clearBoardBadges();
     clearSquareHighlights();
     // Clear explorer UI state so no stale results remain after FEN change.
-    if (el.pieceBadges) el.pieceBadges.innerHTML = '';
-    if (el.allMovesTable) el.allMovesTable.innerHTML = '';
-    if (el.explorerFilters) el.explorerFilters.style.display = 'none';
-    if (el.explorerProgress) el.explorerProgress.style.display = 'none';
-    allMovesResult = [];
-    allMovesResultFen = null;
+    clearExplorerUI();
   });
 
   document.getElementById('copyFenBtn').addEventListener('click', () => {

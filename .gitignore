@@ -6,6 +6,8 @@ engine/Stockfish/src/stockfish
 engine/Stockfish/src/*.nnue
 engine/Stockfish/src/.depend
 engine/Stockfish/stockfish-macos-universal
+.build/
+macos/.build/
 
 # OS
 .DS_Store

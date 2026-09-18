@@ -1,340 +1,724 @@
 /**
- * PawnForge Web Overlay (Coach & Move Assistant)
- * 
- * Embed on your personal website or use as a browser bookmarklet:
- * <script src="http://localhost:4173/overlay.js"></script>
- * 
- * Features:
- * - Floating, draggable Coach HUD with an On/Off toggle
- * - Visual highlight pointers (pulsing origin + target ring) on the board
- * - Top candidate moves with evaluations
- * - Works from opening, middlegame, or endgame
+ * PawnForge Coach Overlay.
+ *
+ * This file works as a Chrome content script and as a bookmarklet-style
+ * script. It prefers a full FEN exposed by the page, then falls back to
+ * reading visible chess pieces from a standard DOM board.
  */
 (() => {
-  if (window.__pawnforge_overlay_loaded) {
-    const hud = document.getElementById('pawnforge-hud');
-    if (hud) hud.style.display = hud.style.display === 'none' ? 'block' : 'none';
+  const root = globalThis;
+  const existingHud = document.getElementById('pawnforge-hud');
+
+  if (root.__pawnforge_overlay_loaded) {
+    if (existingHud) {
+      existingHud.hidden = !existingHud.hidden;
+      existingHud.setAttribute('aria-hidden', String(existingHud.hidden));
+    }
     return;
   }
-  window.__pawnforge_overlay_loaded = true;
 
-  const API_ENDPOINT = 'http://localhost:4173/api/analyze/position';
+  root.__pawnforge_overlay_loaded = true;
+
+  const DEFAULT_ENDPOINT = 'http://127.0.0.1:4173/api/analyze/position';
+  const isExtension = Boolean(root.chrome?.runtime?.id);
+  const extensionRuntime = isExtension ? root.chrome.runtime : null;
+  const extensionStorage = isExtension ? root.chrome.storage?.local : null;
+
   let active = true;
-  let lastFen = '';
+  let endpoint = DEFAULT_ENDPOINT;
+  let sideMode = 'auto';
+  let lastPositionKey = '';
   let activeCandidates = [];
+  let currentSnapshot = null;
+  let pointerMove = null;
+  let analysisRequest = 0;
+  let analysisController = null;
+  let pageFenPromise = null;
+  let pageFenRequestedAt = 0;
 
-  // ── Styles ──
   const style = document.createElement('style');
   style.textContent = `
     #pawnforge-hud {
       position: fixed;
-      bottom: 24px;
       right: 24px;
-      width: 300px;
-      background: rgba(15, 23, 42, 0.95);
-      backdrop-filter: blur(12px);
-      border: 1px solid rgba(34, 197, 94, 0.4);
-      border-radius: 12px;
+      bottom: 24px;
+      z-index: 2147483646;
+      width: min(360px, calc(100vw - 32px));
+      box-sizing: border-box;
       padding: 14px;
-      box-shadow: 0 10px 30px rgba(0,0,0,0.6);
-      z-index: 9999999;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      border: 1px solid rgba(34, 197, 94, 0.45);
+      border-radius: 14px;
+      background: rgba(15, 23, 42, 0.97);
+      box-shadow: 0 16px 42px rgba(0, 0, 0, 0.48);
       color: #e2e8f0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 12px;
+      line-height: 1.4;
       user-select: none;
     }
+    #pawnforge-hud[hidden] { display: none; }
+    #pawnforge-hud, #pawnforge-hud * { box-sizing: border-box; }
     #pawnforge-hud-header {
       display: flex;
       align-items: center;
       justify-content: space-between;
+      gap: 12px;
       margin-bottom: 10px;
       cursor: move;
     }
     #pawnforge-hud-title {
-      font-size: 13px;
-      font-weight: 700;
       display: flex;
       align-items: center;
-      gap: 6px;
+      gap: 7px;
       color: #fff;
+      font-size: 14px;
+      font-weight: 700;
+      letter-spacing: 0.01em;
     }
+    #pawnforge-hud-title-mark { color: #4ade80; font-size: 18px; }
     .pawnforge-toggle {
       display: inline-flex;
       align-items: center;
-      gap: 6px;
-      font-size: 11px;
-      cursor: pointer;
-    }
-    .pawnforge-toggle input { display: none; }
-    .pawnforge-slider {
-      position: relative;
-      width: 28px;
-      height: 16px;
-      background: #374151;
-      border-radius: 16px;
-      transition: 0.2s;
-    }
-    .pawnforge-slider:before {
-      content: "";
-      position: absolute;
-      width: 12px;
-      height: 12px;
-      left: 2px;
-      bottom: 2px;
-      background: #fff;
-      border-radius: 50%;
-      transition: 0.2s;
-    }
-    .pawnforge-toggle input:checked + .pawnforge-slider { background: #22c55e; }
-    .pawnforge-toggle input:checked + .pawnforge-slider:before { transform: translateX(12px); }
-    #pawnforge-hud-body { font-size: 12px; line-height: 1.4; color: #94a3b8; }
-    .pawnforge-move-tag {
-      font-weight: 700;
-      color: #22c55e;
-      background: rgba(34, 197, 94, 0.18);
-      padding: 3px 8px;
-      border-radius: 6px;
-      font-size: 14px;
-      display: inline-block;
-      margin-right: 6px;
-    }
-    .pawnforge-eval-tag {
-      font-size: 12px;
-      font-weight: 600;
-      background: rgba(255,255,255,0.1);
-      padding: 2px 6px;
-      border-radius: 4px;
-      color: #f1f5f9;
-    }
-    .pawnforge-candidate-list {
-      display: flex;
-      gap: 5px;
-      margin-top: 8px;
-      flex-wrap: wrap;
-    }
-    .pawnforge-candidate-pill {
-      font-size: 11px;
-      background: rgba(255,255,255,0.06);
-      border: 1px solid rgba(255,255,255,0.12);
-      border-radius: 4px;
-      padding: 2px 6px;
+      gap: 7px;
       color: #cbd5e1;
       cursor: pointer;
+      font-size: 11px;
+      white-space: nowrap;
     }
-    .pawnforge-candidate-pill:hover, .pawnforge-candidate-pill.active {
-      background: rgba(34, 197, 94, 0.2);
-      border-color: #22c55e;
-      color: #fff;
+    .pawnforge-toggle input { position: absolute; opacity: 0; pointer-events: none; }
+    .pawnforge-slider {
+      position: relative;
+      display: inline-block;
+      width: 30px;
+      height: 17px;
+      border-radius: 17px;
+      background: #475569;
+      transition: background 160ms ease;
     }
-
-    /* Square Visual Pointers */
-    .pawnforge-pointer-origin {
+    .pawnforge-slider::before {
+      content: "";
       position: absolute;
-      inset: 2px;
-      border: 3px solid #22c55e !important;
-      border-radius: 8px !important;
-      box-shadow: 0 0 16px rgba(34, 197, 94, 0.8), inset 0 0 10px rgba(34, 197, 94, 0.3) !important;
-      pointer-events: none !important;
-      z-index: 99999 !important;
-      animation: pfPulse 1.4s infinite alternate ease-in-out !important;
+      left: 2px;
+      top: 2px;
+      width: 13px;
+      height: 13px;
+      border-radius: 50%;
+      background: #fff;
+      transition: transform 160ms ease;
+    }
+    .pawnforge-toggle input:checked + .pawnforge-slider { background: #16a34a; }
+    .pawnforge-toggle input:checked + .pawnforge-slider::before { transform: translateX(13px); }
+    #pawnforge-hud-body { color: #94a3b8; }
+    #pawnforge-hud-msg { min-height: 34px; }
+    .pawnforge-control-row {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      margin-top: 8px;
+    }
+    .pawnforge-control-row label { flex: 0 0 auto; color: #cbd5e1; font-size: 11px; }
+    .pawnforge-control-row input,
+    .pawnforge-control-row select {
+      min-width: 0;
+      flex: 1 1 auto;
+      height: 28px;
+      border: 1px solid rgba(148, 163, 184, 0.35);
+      border-radius: 6px;
+      padding: 0 7px;
+      background: rgba(30, 41, 59, 0.95);
+      color: #f8fafc;
+      font: inherit;
+    }
+    .pawnforge-control-row button,
+    .pawnforge-candidate-pill {
+      border: 1px solid rgba(148, 163, 184, 0.35);
+      border-radius: 6px;
+      background: rgba(51, 65, 85, 0.8);
+      color: #e2e8f0;
+      cursor: pointer;
+      font: inherit;
+    }
+    .pawnforge-control-row button { height: 28px; padding: 0 9px; white-space: nowrap; }
+    .pawnforge-control-row button:hover,
+    .pawnforge-control-row button:focus-visible,
+    .pawnforge-candidate-pill:hover,
+    .pawnforge-candidate-pill:focus-visible,
+    .pawnforge-candidate-pill.active {
+      border-color: #22c55e;
+      background: rgba(34, 197, 94, 0.2);
+      color: #fff;
+      outline: none;
+    }
+    .pawnforge-hint { margin-top: 8px; color: #94a3b8; font-size: 11px; }
+    .pawnforge-move-tag {
+      display: inline-block;
+      margin-right: 6px;
+      border-radius: 6px;
+      padding: 3px 8px;
+      background: rgba(34, 197, 94, 0.18);
+      color: #4ade80;
+      font-size: 15px;
+      font-weight: 700;
+    }
+    .pawnforge-eval-tag {
+      display: inline-block;
+      border-radius: 5px;
+      padding: 2px 6px;
+      background: rgba(255, 255, 255, 0.1);
+      color: #f1f5f9;
+      font-weight: 600;
+    }
+    .pawnforge-candidate-list { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 9px; }
+    .pawnforge-candidate-pill { padding: 3px 7px; font-size: 11px; }
+    .pawnforge-pointer {
+      position: fixed;
+      z-index: 2147483645;
+      pointer-events: none;
+      box-sizing: border-box;
+    }
+    .pawnforge-pointer-origin {
+      border: 3px solid #22c55e;
+      border-radius: 8px;
+      box-shadow: 0 0 18px rgba(34, 197, 94, 0.9), inset 0 0 10px rgba(34, 197, 94, 0.32);
+      animation: pawnforge-pulse 1.35s infinite alternate ease-in-out;
     }
     .pawnforge-pointer-target {
-      position: absolute;
-      inset: 4px;
-      border: 3px dashed #10b981 !important;
-      border-radius: 50% !important;
-      background: rgba(16, 185, 129, 0.25) !important;
-      box-shadow: 0 0 16px rgba(16, 185, 129, 0.8) !important;
-      pointer-events: none !important;
-      z-index: 99999 !important;
-      animation: pfSpin 6s linear infinite !important;
+      border: 3px dashed #10b981;
+      border-radius: 50%;
+      background: rgba(16, 185, 129, 0.25);
+      box-shadow: 0 0 18px rgba(16, 185, 129, 0.85);
     }
-    @keyframes pfPulse {
-      0% { transform: scale(0.96); opacity: 0.8; }
-      100% { transform: scale(1.04); opacity: 1; }
+    @keyframes pawnforge-pulse {
+      from { transform: scale(0.96); opacity: 0.78; }
+      to { transform: scale(1.04); opacity: 1; }
     }
-    @keyframes pfSpin {
-      0% { transform: rotate(0deg); }
-      100% { transform: rotate(360deg); }
+    @media (max-width: 540px) {
+      #pawnforge-hud { right: 12px; bottom: 12px; }
     }
   `;
-  document.head.appendChild(style);
+  (document.head || document.documentElement).appendChild(style);
 
-  // ── HUD Container ──
-  const hud = document.createElement('div');
+  const hud = document.createElement('aside');
   hud.id = 'pawnforge-hud';
+  hud.setAttribute('role', 'region');
+  hud.setAttribute('aria-label', 'PawnForge Coach overlay');
   hud.innerHTML = `
     <div id="pawnforge-hud-header">
-      <div id="pawnforge-hud-title">
-        <span>&#9823;</span> PawnForge Coach
-      </div>
-      <label class="pawnforge-toggle" title="Toggle Coach Help On/Off">
+      <div id="pawnforge-hud-title"><span id="pawnforge-hud-title-mark" aria-hidden="true">♟</span> PawnForge Coach</div>
+      <label class="pawnforge-toggle" title="Toggle coach assistance">
         <input type="checkbox" id="pawnforge-coach-switch" checked />
-        <span class="pawnforge-slider"></span>
+        <span class="pawnforge-slider" aria-hidden="true"></span>
+        <span>Coach</span>
       </label>
     </div>
     <div id="pawnforge-hud-body">
-      <div id="pawnforge-hud-msg">Ready. Monitoring board...</div>
+      <div id="pawnforge-hud-msg" role="status" aria-live="polite">Looking for a chess position...</div>
       <div id="pawnforge-hud-candidates" class="pawnforge-candidate-list"></div>
+      <div class="pawnforge-control-row">
+        <label for="pawnforge-side">Side</label>
+        <select id="pawnforge-side" aria-label="Side to move">
+          <option value="auto">Auto detect</option>
+          <option value="w">White to move</option>
+          <option value="b">Black to move</option>
+        </select>
+        <button id="pawnforge-analyze" type="button">Analyze</button>
+      </div>
+      <div class="pawnforge-control-row">
+        <label for="pawnforge-fen">FEN</label>
+        <input id="pawnforge-fen" type="text" autocomplete="off" spellcheck="false" placeholder="Optional position FEN" aria-label="Optional position FEN" />
+        <button id="pawnforge-use-fen" type="button">Use</button>
+      </div>
+      <div class="pawnforge-control-row">
+        <label for="pawnforge-endpoint">API</label>
+        <input id="pawnforge-endpoint" type="url" autocomplete="off" spellcheck="false" aria-label="PawnForge API endpoint" />
+        <button id="pawnforge-save-endpoint" type="button">Save</button>
+      </div>
+      <div class="pawnforge-hint" id="pawnforge-hint">The overlay reads a page FEN when available, then visible board pieces.</div>
     </div>
   `;
   document.body.appendChild(hud);
 
-  const switchEl = document.getElementById('pawnforge-coach-switch');
-  const msgEl = document.getElementById('pawnforge-hud-msg');
-  const candEl = document.getElementById('pawnforge-hud-candidates');
+  const switchEl = hud.querySelector('#pawnforge-coach-switch');
+  const msgEl = hud.querySelector('#pawnforge-hud-msg');
+  const candidateEl = hud.querySelector('#pawnforge-hud-candidates');
+  const sideEl = hud.querySelector('#pawnforge-side');
+  const fenEl = hud.querySelector('#pawnforge-fen');
+  const analyzeEl = hud.querySelector('#pawnforge-analyze');
+  const useFenEl = hud.querySelector('#pawnforge-use-fen');
+  const endpointEl = hud.querySelector('#pawnforge-endpoint');
+  const saveEndpointEl = hud.querySelector('#pawnforge-save-endpoint');
+  const hintEl = hud.querySelector('#pawnforge-hint');
+  endpointEl.value = endpoint;
 
-  switchEl.addEventListener('change', (e) => {
-    active = e.target.checked;
-    if (!active) {
-      msgEl.innerHTML = '<span style="color:#64748b;">Coach assistance is OFF.</span>';
-      candEl.innerHTML = '';
-      removePointers();
-    } else {
-      msgEl.textContent = 'Coach is ON. Evaluating...';
-      lastFen = '';
-      checkBoard();
-    }
-  });
-
-  // Dragging support
-  let isDragging = false, startX, startY, initX, initY;
-  const header = document.getElementById('pawnforge-hud-header');
-  header.addEventListener('mousedown', (e) => {
-    if (e.target.closest('.pawnforge-toggle')) return;
-    isDragging = true;
-    startX = e.clientX;
-    startY = e.clientY;
-    const rect = hud.getBoundingClientRect();
-    initX = rect.left;
-    initY = rect.top;
-    e.preventDefault();
-  });
-  window.addEventListener('mousemove', (e) => {
-    if (!isDragging) return;
-    hud.style.left = `${initX + (e.clientX - startX)}px`;
-    hud.style.top = `${initY + (e.clientY - startY)}px`;
-    hud.style.bottom = 'auto';
-    hud.style.right = 'auto';
-  });
-  window.addEventListener('mouseup', () => { isDragging = false; });
-
-  function removePointers() {
-    document.querySelectorAll('.pawnforge-pointer-origin, .pawnforge-pointer-target').forEach((el) => el.remove());
+  function setMessage(text) {
+    msgEl.textContent = text;
   }
 
-  // Find DOM square element on host chessboard
-  function findSquareElement(sq) {
-    sq = sq.toLowerCase();
+  function setHint(text) {
+    hintEl.textContent = text;
+  }
+
+  function removePointers() {
+    document.querySelectorAll('[data-pawnforge-pointer]').forEach((element) => element.remove());
+    pointerMove = null;
+  }
+
+  function clearAnalysisUi() {
+    activeCandidates = [];
+    candidateEl.replaceChildren();
+    removePointers();
+  }
+
+  function isFenLike(value) {
+    if (typeof value !== 'string') return false;
+    const fields = value.trim().split(/\s+/);
+    if (fields.length < 2 || fields.length > 6 || !/^[wb]$/.test(fields[1])) return false;
+    const rows = fields[0].split('/');
+    if (rows.length !== 8) return false;
+    return rows.every((row) => {
+      let count = 0;
+      for (const token of row) {
+        if (/\d/.test(token)) count += Number(token);
+        else if (/[prnbqkPRNBQK]/.test(token)) count += 1;
+        else return false;
+      }
+      return count === 8;
+    });
+  }
+
+  function normaliseFen(value) {
+    if (!isFenLike(value)) return null;
+    const fields = value.trim().split(/\s+/);
+    while (fields.length < 6) fields.push(fields.length === 2 ? '-' : fields.length === 3 ? '-' : fields.length === 4 ? '0' : '1');
+    return fields.join(' ');
+  }
+
+  function classText(element) {
+    if (!element) return '';
+    const value = element.getAttribute?.('class');
+    return typeof value === 'string' ? value.toLowerCase() : '';
+  }
+
+  function boardOrientation(board) {
+    const elements = [board, board?.parentElement, board?.parentElement?.parentElement];
+    const attributes = elements.flatMap((element) => [
+      element?.getAttribute?.('data-orientation') || '',
+      element?.getAttribute?.('data-side') || '',
+      element?.getAttribute?.('data-flipped') || '',
+      classText(element)
+    ]).join(' ');
+    const explicitlyFlipped = elements.some((element) => element?.getAttribute?.('data-flipped') === 'true');
+    return explicitlyFlipped || /orientation[-_ ]?black|flipped|\bblack[-_ ]?bottom\b/.test(attributes) ? 'black' : 'white';
+  }
+
+  function isSquareBoard(rect) {
+    return rect && rect.width >= 160 && rect.height >= 160 && rect.width / rect.height > 0.72 && rect.width / rect.height < 1.38;
+  }
+
+  function findBoardModel() {
     const selectors = [
-      `.square-${sq}`,
-      `[data-square="${sq}"]`,
-      `[data-piece-target="${sq}"]`,
-      `square.${sq}`
+      'cg-board',
+      '.cg-board',
+      '[data-board]',
+      '[role="grid"]',
+      '[class*="chessboard" i]',
+      '[class*="chess-board" i]',
+      '[class*="board" i]'
     ];
-    for (const sel of selectors) {
-      const found = document.querySelector(sel);
-      if (found) return found;
+    const candidates = [];
+    const seen = new Set();
+    for (const selector of selectors) {
+      for (const element of document.querySelectorAll(selector)) {
+        if (seen.has(element) || element.id === 'pawnforge-hud' || element.closest?.('#pawnforge-hud')) continue;
+        seen.add(element);
+        const rect = element.getBoundingClientRect();
+        if (isSquareBoard(rect)) candidates.push({ element, rect, area: rect.width * rect.height });
+      }
+    }
+    const selected = candidates.sort((a, b) => b.area - a.area)[0];
+    return selected ? { ...selected, orientation: boardOrientation(selected.element) } : null;
+  }
+
+  function pieceToken(element) {
+    const text = [
+      element.getAttribute?.('data-piece'),
+      element.getAttribute?.('data-color'),
+      element.getAttribute?.('data-type'),
+      classText(element)
+    ].filter(Boolean).join(' ').toLowerCase();
+    const compact = text.match(/(?:^|\s)([wb])([pnbrqk])(?:\s|$)/);
+    if (compact) return compact[1] === 'w' ? compact[2].toUpperCase() : compact[2];
+    const type = text.match(/\b(pawn|knight|bishop|rook|queen|king)\b/);
+    if (!type) return null;
+    const pieceByName = { pawn: 'P', knight: 'N', bishop: 'B', rook: 'R', queen: 'Q', king: 'K' };
+    const symbol = pieceByName[type[1]];
+    const isBlack = /\bblack\b|\bdark\b/.test(text);
+    const isWhite = /\bwhite\b|\blight\b/.test(text);
+    return isBlack ? symbol.toLowerCase() : isWhite ? symbol : null;
+  }
+
+  function squareFromPoint(rect, x, y, orientation) {
+    const xIndex = Math.max(0, Math.min(7, Math.floor(((x - rect.left) / rect.width) * 8)));
+    const yIndex = Math.max(0, Math.min(7, Math.floor(((y - rect.top) / rect.height) * 8)));
+    const fileIndex = orientation === 'black' ? 7 - xIndex : xIndex;
+    const rank = orientation === 'black' ? yIndex + 1 : 8 - yIndex;
+    return `${String.fromCharCode(97 + fileIndex)}${rank}`;
+  }
+
+  function sideFromDom(board) {
+    if (sideMode === 'w' || sideMode === 'b') return sideMode;
+    const elements = [board?.element, board?.element?.parentElement, board?.element?.parentElement?.parentElement];
+    for (const element of elements) {
+      if (!element) continue;
+      for (const attribute of ['data-turn', 'data-side-to-move', 'aria-label']) {
+        const value = (element.getAttribute(attribute) || '').toLowerCase();
+        if (attribute !== 'aria-label' && /^(white|w)$/.test(value)) return 'w';
+        if (attribute !== 'aria-label' && /^(black|b)$/.test(value)) return 'b';
+        if (/\bwhite\b|^w$/.test(value) && /turn|move|side|^w$/.test(value)) return 'w';
+        if (/\bblack\b|^b$/.test(value) && /turn|move|side|^b$/.test(value)) return 'b';
+      }
+      const classes = classText(element);
+      if (/turn[-_ ]?white|white[-_ ]?to[-_ ]?move|white[-_ ]?turn/.test(classes)) return 'w';
+      if (/turn[-_ ]?black|black[-_ ]?to[-_ ]?move|black[-_ ]?turn/.test(classes)) return 'b';
     }
     return null;
   }
 
+  function readDomPosition() {
+    const board = findBoardModel();
+    if (!board) return null;
+    const pieceSelectors = ['piece', '[data-piece]', '[data-color][data-type]', '[class*="piece" i]'];
+    const pieces = [];
+    const seen = new Set();
+    for (const selector of pieceSelectors) {
+      for (const element of board.element.querySelectorAll(selector)) {
+        if (seen.has(element)) continue;
+        seen.add(element);
+        const piece = pieceToken(element);
+        const rect = element.getBoundingClientRect();
+        if (piece && rect.width > 2 && rect.height > 2 && rect.right > board.rect.left && rect.left < board.rect.right && rect.bottom > board.rect.top && rect.top < board.rect.bottom) {
+          pieces.push({ piece, rect });
+        }
+      }
+    }
+    if (pieces.length < 2) return null;
+    const squares = new Map();
+    for (const item of pieces) {
+      const square = squareFromPoint(board.rect, item.rect.left + item.rect.width / 2, item.rect.top + item.rect.height / 2, board.orientation);
+      squares.set(square, item.piece);
+    }
+    const rows = [];
+    for (let rank = 8; rank >= 1; rank -= 1) {
+      let empty = 0;
+      let row = '';
+      for (let file = 0; file < 8; file += 1) {
+        const piece = squares.get(`${String.fromCharCode(97 + file)}${rank}`);
+        if (!piece) empty += 1;
+        else {
+          if (empty) row += empty;
+          empty = 0;
+          row += piece;
+        }
+      }
+      if (empty) row += empty;
+      rows.push(row);
+    }
+    const side = sideFromDom(board);
+    if (!side) return { board, sideUnknown: true };
+    return { fen: `${rows.join('/')} ${side} - - 0 1`, board, source: 'visible board' };
+  }
+
+  function readSameWorldFen() {
+    const candidates = [
+      typeof root.game?.fen === 'function' ? root.game.fen() : null,
+      typeof root.chess?.fen === 'function' ? root.chess.fen() : null,
+      root.__PAWNFORGE_FEN__,
+      document.querySelector('input#fenInput, input[name="fen"], input.fen')?.value
+    ];
+    return candidates.map(normaliseFen).find(Boolean) || null;
+  }
+
+  function readPageFen() {
+    const sameWorld = readSameWorldFen();
+    if (sameWorld || !isExtension || !extensionRuntime?.sendMessage) return Promise.resolve(sameWorld);
+    const now = Date.now();
+    if (pageFenPromise && now - pageFenRequestedAt < 900) return pageFenPromise;
+    pageFenRequestedAt = now;
+    pageFenPromise = new Promise((resolve) => {
+      extensionRuntime.sendMessage({ type: 'read-page-fen' }, (response) => {
+        if (root.chrome.runtime.lastError) resolve(null);
+        else resolve(normaliseFen(response?.fen));
+      });
+    }).finally(() => {
+      window.setTimeout(() => { pageFenPromise = null; }, 500);
+    });
+    return pageFenPromise;
+  }
+
+  async function detectCurrentPosition() {
+    const manualFen = normaliseFen(fenEl.value);
+    if (manualFen) return { fen: manualFen, source: 'manual FEN', board: findBoardModel() };
+    const pageFen = await readPageFen();
+    if (pageFen) return { fen: pageFen, source: 'page FEN', board: findBoardModel() };
+    return readDomPosition();
+  }
+
+  function squareRect(board, square) {
+    if (!board || !/^[a-h][1-8]$/.test(square)) return null;
+    const fileIndex = square.charCodeAt(0) - 97;
+    const rank = Number(square[1]);
+    const xIndex = board.orientation === 'black' ? 7 - fileIndex : fileIndex;
+    const yIndex = board.orientation === 'black' ? rank - 1 : 8 - rank;
+    return {
+      left: board.rect.left + (xIndex * board.rect.width) / 8,
+      top: board.rect.top + (yIndex * board.rect.height) / 8,
+      width: board.rect.width / 8,
+      height: board.rect.height / 8
+    };
+  }
+
+  function updatePointerPositions() {
+    if (!pointerMove) return;
+    const board = findBoardModel();
+    const origin = squareRect(board, pointerMove.from);
+    const target = squareRect(board, pointerMove.to);
+    const originEl = document.querySelector('[data-pawnforge-pointer="origin"]');
+    const targetEl = document.querySelector('[data-pawnforge-pointer="target"]');
+    for (const [element, rect] of [[originEl, origin], [targetEl, target]]) {
+      if (!element || !rect) continue;
+      element.style.left = `${rect.left + 2}px`;
+      element.style.top = `${rect.top + 2}px`;
+      element.style.width = `${Math.max(0, rect.width - 4)}px`;
+      element.style.height = `${Math.max(0, rect.height - 4)}px`;
+    }
+  }
+
   function renderSquarePointers(from, to) {
     removePointers();
-    const fromEl = findSquareElement(from);
-    const toEl = findSquareElement(to);
-
-    if (fromEl) {
-      const pOrigin = document.createElement('div');
-      pOrigin.className = 'pawnforge-pointer-origin';
-      fromEl.style.position = 'relative';
-      fromEl.appendChild(pOrigin);
-    }
-    if (toEl) {
-      const pTarget = document.createElement('div');
-      pTarget.className = 'pawnforge-pointer-target';
-      toEl.style.position = 'relative';
-      toEl.appendChild(pTarget);
-    }
+    pointerMove = { from, to };
+    const origin = document.createElement('div');
+    origin.className = 'pawnforge-pointer pawnforge-pointer-origin';
+    origin.dataset.pawnforgePointer = 'origin';
+    const target = document.createElement('div');
+    target.className = 'pawnforge-pointer pawnforge-pointer-target';
+    target.dataset.pawnforgePointer = 'target';
+    document.body.append(origin, target);
+    updatePointerPositions();
   }
 
-  // Detect board FEN from common webpage chessboards
-  function detectCurrentFen() {
-    if (window.game && typeof window.game.fen === 'function') {
-      return window.game.fen();
-    }
-    const fenInput = document.querySelector('input#fenInput, input[name="fen"], input.fen');
-    if (fenInput && fenInput.value && fenInput.value.includes('/')) {
-      return fenInput.value.trim();
-    }
-    return 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+  function formatEvaluation(value) {
+    const score = Number(value);
+    if (!Number.isFinite(score)) return 'engine';
+    const formatted = (score / 100).toFixed(2);
+    return score >= 0 ? `+${formatted}` : formatted;
   }
 
-  function selectCandidate(idx) {
-    if (!activeCandidates || !activeCandidates[idx]) return;
-    const top = activeCandidates[idx];
-    const from = top.uci.substring(0, 2);
-    const to = top.uci.substring(2, 4);
-    const evalScore = (top.evalCp / 100).toFixed(2);
-    const evalTag = top.evalCp >= 0 ? `+${evalScore}` : evalScore;
-    const turn = lastFen.split(' ')[1] === 'w' ? 'White' : 'Black';
-
-    msgEl.innerHTML = `
-      <div style="margin-bottom:6px;">
-        <span class="pawnforge-move-tag">${from.toUpperCase()} ➔ ${to.toUpperCase()}</span>
-        <span class="pawnforge-eval-tag">${evalTag}</span>
-      </div>
-      <div style="font-size:11px;color:#cbd5e1;line-height:1.4;">
-        👉 <strong>${turn}</strong> moves piece on <strong>${from.toUpperCase()}</strong> to <strong>${to.toUpperCase()}</strong><br>
-        Line: <em>${top.pv.split(' ').slice(0, 4).join(' ')}</em>
-      </div>
-    `;
-
-    document.querySelectorAll('.pawnforge-candidate-pill').forEach((p, i) => {
-      p.classList.toggle('active', i === idx);
+  function selectCandidate(index) {
+    const candidate = activeCandidates[index];
+    if (!candidate || typeof candidate.uci !== 'string' || candidate.uci.length < 4) return;
+    const from = candidate.uci.slice(0, 2).toUpperCase();
+    const to = candidate.uci.slice(2, 4).toUpperCase();
+    const turn = (currentSnapshot?.fen || '').split(' ')[1] === 'b' ? 'Black' : 'White';
+    const moveLine = typeof candidate.pv === 'string' ? candidate.pv.split(/\s+/).slice(0, 5).join(' ') : '';
+    msgEl.replaceChildren();
+    const summary = document.createElement('div');
+    const move = document.createElement('span');
+    move.className = 'pawnforge-move-tag';
+    move.textContent = `${from} ➜ ${to}`;
+    const evaluation = document.createElement('span');
+    evaluation.className = 'pawnforge-eval-tag';
+    evaluation.textContent = formatEvaluation(candidate.evalCp);
+    summary.append(move, evaluation);
+    const explanation = document.createElement('div');
+    explanation.style.cssText = 'margin-top:6px;color:#cbd5e1;font-size:11px;';
+    explanation.textContent = `${turn} should move ${from} to ${to}${moveLine ? ` · ${moveLine}` : ''}`;
+    msgEl.append(summary, explanation);
+    candidateEl.querySelectorAll('.pawnforge-candidate-pill').forEach((element, candidateIndex) => {
+      element.classList.toggle('active', candidateIndex === index);
     });
-
-    renderSquarePointers(from, to);
+    renderSquarePointers(candidate.uci.slice(0, 2), candidate.uci.slice(2, 4));
   }
 
-  async function checkBoard() {
+  function renderCandidates(candidates) {
+    candidateEl.replaceChildren();
+    activeCandidates = Array.isArray(candidates) ? candidates.slice(0, 5) : [];
+    activeCandidates.forEach((candidate, index) => {
+      if (!candidate || typeof candidate.uci !== 'string') return;
+      const pill = document.createElement('button');
+      pill.type = 'button';
+      pill.className = `pawnforge-candidate-pill${index === 0 ? ' active' : ''}`;
+      pill.textContent = `#${index + 1} ${candidate.uci.slice(0, 2).toUpperCase()}-${candidate.uci.slice(2, 4).toUpperCase()} (${formatEvaluation(candidate.evalCp)})`;
+      pill.addEventListener('click', () => selectCandidate(index));
+      candidateEl.appendChild(pill);
+    });
+    if (activeCandidates.length) selectCandidate(0);
+  }
+
+  async function analyzePosition(force = false) {
     if (!active) return;
-    const fen = detectCurrentFen();
-    if (fen === lastFen) return;
-    lastFen = fen;
+    const requestId = ++analysisRequest;
+    const snapshot = await detectCurrentPosition();
+    if (!active || requestId !== analysisRequest) return;
+
+    if (!snapshot?.fen) {
+      if (snapshot?.sideUnknown) {
+        lastPositionKey = '';
+        currentSnapshot = snapshot;
+        clearAnalysisUi();
+        setMessage('Board found. Choose White or Black, then Analyze.');
+        setHint('The site exposes pieces but not the side to move.');
+      } else {
+        lastPositionKey = '';
+        currentSnapshot = null;
+        clearAnalysisUi();
+        setMessage('No chess position found on this page.');
+        setHint('Open a chessboard or paste a full FEN above.');
+      }
+      return;
+    }
+
+    if (!force && snapshot.fen === lastPositionKey) {
+      currentSnapshot = snapshot;
+      updatePointerPositions();
+      return;
+    }
+
+    lastPositionKey = snapshot.fen;
+    currentSnapshot = snapshot;
+    clearAnalysisUi();
+    setMessage(`Analyzing ${snapshot.source || 'position'}...`);
+    setHint('PawnForge is checking the strongest legal continuations.');
+    if (analysisController) analysisController.abort();
+    analysisController = new AbortController();
 
     try {
-      const res = await fetch(API_ENDPOINT, {
+      const response = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fen, settings: { depth: 10, multiPv: 3 } })
+        body: JSON.stringify({ fen: snapshot.fen, settings: { depth: 10, multiPv: 3 } }),
+        signal: analysisController.signal
       });
-      if (!res.ok) throw new Error('Engine offline');
-      const data = await res.json();
-      if (!active) return;
-
-      if (data.topMoves && data.topMoves.length > 0) {
-        activeCandidates = data.topMoves;
-        candEl.innerHTML = '';
-        activeCandidates.forEach((c, i) => {
-          const pill = document.createElement('button');
-          pill.className = 'pawnforge-candidate-pill' + (i === 0 ? ' active' : '');
-          const uciFrom = c.uci.substring(0, 2).toUpperCase();
-          const uciTo = c.uci.substring(2, 4).toUpperCase();
-          const score = (c.evalCp / 100).toFixed(1);
-          pill.textContent = `#${i + 1} ${uciFrom}-${uciTo} (${c.evalCp >= 0 ? '+' : ''}${score})`;
-          pill.addEventListener('click', () => selectCandidate(i));
-          candEl.appendChild(pill);
-        });
-
-        selectCandidate(0);
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.error || `Engine returned HTTP ${response.status}`);
       }
-    } catch (_e) {
-      msgEl.textContent = 'Engine unreachable.';
-      removePointers();
+      const data = await response.json();
+      if (!active || requestId !== analysisRequest || snapshot.fen !== lastPositionKey) return;
+      if (!Array.isArray(data.topMoves) || data.topMoves.length === 0) {
+        setMessage('The engine returned no legal moves for this position.');
+        return;
+      }
+      renderCandidates(data.topMoves);
+      setHint(`Source: ${snapshot.source || 'position'}. Select a line to move the highlights.`);
+    } catch (error) {
+      if (error?.name === 'AbortError' || requestId !== analysisRequest) return;
+      clearAnalysisUi();
+      setMessage('Engine unavailable. Start PawnForge and check the endpoint.');
+      setHint(error?.message || endpoint);
     }
   }
 
-  // Periodic position polling
-  setInterval(checkBoard, 1000);
-  checkBoard();
+  async function loadSettings() {
+    if (!extensionStorage) return;
+    try {
+      const stored = await extensionStorage.get(['endpoint', 'sideMode']);
+      if (typeof stored.endpoint === 'string' && /^https?:\/\//.test(stored.endpoint)) endpoint = stored.endpoint;
+      if (stored.sideMode === 'w' || stored.sideMode === 'b' || stored.sideMode === 'auto') sideMode = stored.sideMode;
+      sideEl.value = sideMode;
+      endpointEl.value = endpoint;
+    } catch (_error) {
+      setHint('Using the default local PawnForge endpoint.');
+    }
+  }
+
+  function persistSettings() {
+    if (!extensionStorage) return;
+    extensionStorage.set({ endpoint, sideMode }).catch(() => {});
+  }
+
+  function setActive(next) {
+    active = next;
+    switchEl.checked = active;
+    if (!active) {
+      if (analysisController) analysisController.abort();
+      clearAnalysisUi();
+      setMessage('Coach assistance is off.');
+      setHint('Turn Coach on to resume position detection.');
+      return;
+    }
+    lastPositionKey = '';
+    setMessage('Coach is on. Looking for a chess position...');
+    analyzePosition(true);
+  }
+
+  switchEl.addEventListener('change', () => setActive(switchEl.checked));
+  sideEl.addEventListener('change', () => {
+    sideMode = sideEl.value;
+    persistSettings();
+    lastPositionKey = '';
+    analyzePosition(true);
+  });
+  analyzeEl.addEventListener('click', () => analyzePosition(true));
+  useFenEl.addEventListener('click', () => {
+    const value = normaliseFen(fenEl.value);
+    if (!value) {
+      setMessage('Enter a complete six-field FEN first.');
+      return;
+    }
+    fenEl.value = value;
+    analyzePosition(true);
+  });
+  saveEndpointEl.addEventListener('click', () => {
+    try {
+      const value = new URL(endpointEl.value.trim());
+      if (!['http:', 'https:'].includes(value.protocol)) throw new Error('HTTP or HTTPS is required.');
+      endpoint = value.toString();
+      endpointEl.value = endpoint;
+      persistSettings();
+      lastPositionKey = '';
+      setMessage('API endpoint saved.');
+      analyzePosition(true);
+    } catch (error) {
+      setMessage(error?.message || 'Enter a valid API endpoint.');
+    }
+  });
+  fenEl.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') useFenEl.click();
+  });
+
+  let dragging = false;
+  let dragStartX = 0;
+  let dragStartY = 0;
+  let dragInitialLeft = 0;
+  let dragInitialTop = 0;
+  const header = hud.querySelector('#pawnforge-hud-header');
+  header.addEventListener('mousedown', (event) => {
+    if (event.target.closest('button, input, select, label')) return;
+    dragging = true;
+    dragStartX = event.clientX;
+    dragStartY = event.clientY;
+    const rect = hud.getBoundingClientRect();
+    dragInitialLeft = rect.left;
+    dragInitialTop = rect.top;
+    event.preventDefault();
+  });
+  window.addEventListener('mousemove', (event) => {
+    if (!dragging) return;
+    hud.style.left = `${dragInitialLeft + event.clientX - dragStartX}px`;
+    hud.style.top = `${dragInitialTop + event.clientY - dragStartY}px`;
+    hud.style.right = 'auto';
+    hud.style.bottom = 'auto';
+  });
+  window.addEventListener('mouseup', () => { dragging = false; });
+  window.addEventListener('scroll', updatePointerPositions, { passive: true });
+  window.addEventListener('resize', updatePointerPositions, { passive: true });
+
+  if (extensionRuntime?.onMessage) {
+    extensionRuntime.onMessage.addListener((message) => {
+      if (message?.type === 'toggle-overlay') setActive(!active);
+    });
+  }
+
+  loadSettings().finally(() => analyzePosition(true));
+  window.setInterval(() => analyzePosition(false), 1200);
 })();

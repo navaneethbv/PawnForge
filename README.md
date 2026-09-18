@@ -185,6 +185,25 @@ curl "http://localhost:4173/api/opening?moves=e4+e5+Nf3+Nc6+Bb5"
 
 4. **Openings tab** - Play a few opening moves on the board, then click "Detect Opening" to see the ECO code, name, and suggested continuations.
 
+### Chrome Coach Overlay
+
+The repository root also contains a Manifest V3 Chrome extension.
+Start PawnForge with `npm start`, open `chrome://extensions`, enable Developer mode, and load this repository directory as an unpacked extension.
+The Coach overlay runs on HTTP and HTTPS chess sites, reads a page FEN or visible DOM pieces, calls the local Stockfish API, and highlights the recommended origin and destination squares in red.
+Auto detect uses the site's turn metadata when available and falls back to the bottom move-list row, so a completed white and black pair means White moves next while a row containing only White's move means Black moves next.
+Use the Side selector or paste a full FEN when a site does not expose whose turn it is or renders its board only to a canvas.
+The API field supports a different local server port.
+
+See [extension/README.md](extension/README.md) for setup and detection details.
+
+### macOS companion
+
+The `macos/` Swift package provides a menu bar launcher for the local PawnForge server.
+It starts and stops Node.js, opens the web app, and opens Chrome's extension manager.
+Chrome remains responsible for reading the active page and drawing the overlay through its extension permission model.
+
+Run it from the repository with `swift run --package-path macos -- --repo /Users/navaneethbv/Desktop/Projects/PawnForge`.
+
 ### Troubleshooting
 
 | Problem | Solution |

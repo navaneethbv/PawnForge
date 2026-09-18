@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "PawnForge Coach Overlay",
+  "version": "0.4.0",
+  "description": "Shows the next Stockfish move over chessboards in Chrome.",
+  "action": {
+    "default_title": "Toggle PawnForge Coach"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "permissions": [
+    "scripting",
+    "storage"
+  ],
+  "host_permissions": [
+    "<all_urls>",
+    "http://127.0.0.1:4173/*",
+    "http://localhost:4173/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["overlay.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

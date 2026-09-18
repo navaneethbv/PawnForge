@@ -44,6 +44,9 @@ function validateFen(value) {
 
   let whiteKingCount = 0;
   let blackKingCount = 0;
+  let pieceCount = 0;
+  let whitePawnCount = 0;
+  let blackPawnCount = 0;
   for (const rank of ranks) {
     let squares = 0;
     for (const symbol of rank) {
@@ -51,8 +54,11 @@ function validateFen(value) {
         squares += Number(symbol);
       } else if (/^[prnbqkPRNBQK]$/.test(symbol)) {
         squares += 1;
+        pieceCount += 1;
         if (symbol === 'K') whiteKingCount += 1;
         if (symbol === 'k') blackKingCount += 1;
+        if (symbol === 'P') whitePawnCount += 1;
+        if (symbol === 'p') blackPawnCount += 1;
       } else {
         throw new HttpError(400, 'Invalid FEN.');
       }
@@ -60,7 +66,7 @@ function validateFen(value) {
     if (squares !== 8) throw new HttpError(400, 'Invalid FEN.');
   }
 
-  if (whiteKingCount !== 1 || blackKingCount !== 1 || !/^[wb]$/.test(fields[1])) {
+  if (pieceCount > 32 || whitePawnCount > 8 || blackPawnCount > 8 || whiteKingCount !== 1 || blackKingCount !== 1 || !/^[wb]$/.test(fields[1])) {
     throw new HttpError(400, 'Invalid FEN.');
   }
   if (!/^(?:-|[KQkq]+)$/.test(fields[2]) || new Set(fields[2]).size !== fields[2].length) {

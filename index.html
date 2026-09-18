@@ -42,6 +42,19 @@
               <div id="board"></div>
               <div id="boardBadgeOverlay" class="board-badge-overlay"></div>
               <div id="boardSquareHighlights" class="board-square-highlights"></div>
+              <svg id="boardArrowOverlay" class="board-arrow-overlay" viewBox="0 0 100 100" preserveAspectRatio="none">
+                <defs>
+                  <marker id="coachArrowHead" markerWidth="4" markerHeight="4" refX="2.5" refY="2" orient="auto">
+                    <polygon points="0 0, 4 2, 0 4" fill="#22c55e" />
+                  </marker>
+                  <marker id="coachArrowHeadSecondary" markerWidth="4" markerHeight="4" refX="2.5" refY="2" orient="auto">
+                    <polygon points="0 0, 4 2, 0 4" fill="#3b82f6" />
+                  </marker>
+                  <marker id="coachArrowHeadTertiary" markerWidth="4" markerHeight="4" refX="2.5" refY="2" orient="auto">
+                    <polygon points="0 0, 4 2, 0 4" fill="#f59e0b" />
+                  </marker>
+                </defs>
+              </svg>
             </div>
           </div>
 
@@ -56,9 +69,47 @@
           </div>
 
           <div class="board-controls">
-            <button id="flipBtn" title="Flip board">&#8693; Flip</button>
+            <button id="flipBtn" title="Flip board (Hotkey: F)">&#8693; Flip</button>
             <button id="resetBtn" title="Reset to start">&#8635; Reset</button>
-            <button id="undoBtn" title="Undo last move">&#9664; Undo</button>
+            <button id="undoBtn" title="Undo last move (Hotkey: Z)">&#9664; Undo</button>
+            <button id="soundToggleBtn" class="icon-btn" title="Toggle Move Sounds">&#128266;</button>
+            <label class="coach-toggle-label" title="Toggle Move Coach hints (Hotkey: H)">
+              <span class="coach-label-text">&#127919; Coach</span>
+              <input type="checkbox" id="coachToggle" />
+              <span class="coach-slider"></span>
+            </label>
+          </div>
+
+          <div id="coachCard" class="coach-card" style="display: none;">
+            <div class="coach-header">
+              <div class="coach-title">
+                <span class="coach-icon">&#128161;</span>
+                <span id="coachStatusText">Coach: Thinking...</span>
+              </div>
+              <button id="applyCoachMoveBtn" class="coach-apply-btn" title="Play recommended move (Hotkey: Space)">&#9654; Play Move</button>
+            </div>
+            <div class="coach-body">
+              <div id="coachMoveDetail" class="coach-move-detail">Calculating next move...</div>
+              <div id="coachCandidates" class="coach-candidates-list"></div>
+            </div>
+          </div>
+
+          <!-- Sparring / Play vs Computer bar -->
+          <div class="sparring-row">
+            <label class="sparring-toggle-label" title="Play sparring game against Stockfish 19">
+              <input type="checkbox" id="sparringToggle" />
+              <span class="coach-slider"></span>
+              <span class="sparring-label-text">&#9881; Play vs Engine</span>
+            </label>
+            <select id="sparringColor" title="Your side">
+              <option value="w" selected>You: White</option>
+              <option value="b">You: Black</option>
+            </select>
+            <select id="sparringLevel" title="Engine difficulty">
+              <option value="8">Casual (Depth 8)</option>
+              <option value="12" selected>Club (Depth 12)</option>
+              <option value="16">Master (Depth 16)</option>
+            </select>
           </div>
 
           <div class="fen-row">
@@ -68,7 +119,15 @@
           </div>
 
           <div class="move-list-container">
-            <h3>Moves</h3>
+            <div class="move-list-header">
+              <h3>Moves</h3>
+              <div class="move-nav-controls">
+                <button id="moveNavStart" title="Start position (Home)">&#9198;</button>
+                <button id="moveNavPrev" title="Previous move (Left arrow)">&#9664;</button>
+                <button id="moveNavNext" title="Next move (Right arrow)">&#9654;</button>
+                <button id="moveNavEnd" title="Current move (End)">&#9197;</button>
+              </div>
+            </div>
             <div id="moveList" class="move-list"></div>
           </div>
         </section>

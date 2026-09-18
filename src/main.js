@@ -16,6 +16,15 @@ const PIECE_UNICODE = {
   wp: '\u2659', wn: '\u2658', wb: '\u2657', wr: '\u2656', wq: '\u2655', wk: '\u2654',
   bp: '\u265F', bn: '\u265E', bb: '\u265D', br: '\u265C', bq: '\u265B', bk: '\u265A'
 };
+const PIECE_THEME = Object.fromEntries(Object.entries(PIECE_UNICODE).map(([key, glyph]) => {
+  const isWhite = key[0] === 'w';
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 80">
+    <text x="40" y="62" text-anchor="middle" font-family="Georgia, serif" font-size="64"
+      fill="${isWhite ? '#f8fafc' : '#111827'}" stroke="${isWhite ? '#111827' : '#f8fafc'}"
+      stroke-width="${isWhite ? '1.5' : '1'}" paint-order="stroke">${glyph}</text>
+  </svg>`;
+  return [`${key[0]}${key[1].toUpperCase()}`, `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`];
+}));
 
 // ── DOM Elements ──
 const el = {
@@ -52,12 +61,122 @@ const el = {
   openingResult: document.getElementById('openingResult'),
   openingContinuations: document.getElementById('openingContinuations'),
   filterPiece: document.getElementById('filterPiece'),
-  sortMoves: document.getElementById('sortMoves')
+  sortMoves: document.getElementById('sortMoves'),
+  boardArrowOverlay: document.getElementById('boardArrowOverlay'),
+  coachToggle: document.getElementById('coachToggle'),
+  coachCard: document.getElementById('coachCard'),
+  coachStatusText: document.getElementById('coachStatusText'),
+  coachMoveDetail: document.getElementById('coachMoveDetail'),
+  applyCoachMoveBtn: document.getElementById('applyCoachMoveBtn'),
+  coachCandidates: document.getElementById('coachCandidates'),
+  sparringToggle: document.getElementById('sparringToggle'),
+  sparringColor: document.getElementById('sparringColor'),
+  sparringLevel: document.getElementById('sparringLevel'),
+  soundToggleBtn: document.getElementById('soundToggleBtn'),
+  moveNavStart: document.getElementById('moveNavStart'),
+  moveNavPrev: document.getElementById('moveNavPrev'),
+  moveNavNext: document.getElementById('moveNavNext'),
+  moveNavEnd: document.getElementById('moveNavEnd')
 };
 
 // ── Board orientation tracking ──
 let boardFlipped = false;
 let lastHighlight = null; // { from, to, category }
+let positionAnalysisRequestId = 0;
+let explorerRequestId = 0;
+let activeExplorerStream = null;
+
+// ── Zero-Dependency Web Audio Synthesis ──
+let audioContext = null;
+let soundEnabled = true;
+
+function playChessSound(type = 'move') {
+  if (!soundEnabled) return;
+  try {
+    if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioContext.state === 'suspended') audioContext.resume();
+    const osc = audioContext.createOscillator();
+    const gain = audioContext.createGain();
+    osc.connect(gain);
+    gain.connect(audioContext.destination);
+    const now = audioContext.currentTime;
+
+    if (type === 'capture') {
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(150, now);
+      osc.frequency.exponentialRampToValueAtTime(45, now + 0.12);
+      gain.gain.setValueAtTime(0.35, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
+      osc.start(now);
+      osc.stop(now + 0.12);
+    } else if (type === 'check') {
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(587.33, now);
+      osc.frequency.setValueAtTime(880, now + 0.08);
+      gain.gain.setValueAtTime(0.25, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.28);
+      osc.start(now);
+      osc.stop(now + 0.28);
+    } else {
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(260, now);
+      osc.frequency.exponentialRampToValueAtTime(70, now + 0.06);
+      gain.gain.setValueAtTime(0.25, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.06);
+      osc.start(now);
+      osc.stop(now + 0.06);
+    }
+  } catch (_e) {}
+}
+
+// ── Move History Tracking & Interactive Navigation ──
+let initialFen = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+let playedMoves = []; // { from, to, promotion, san }
+let currentMoveIndex = -1; // -1 = initial position
+
+function recordPlayedMove(move) {
+  if (!move) return;
+  if (currentMoveIndex < playedMoves.length - 1) {
+    playedMoves = playedMoves.slice(0, currentMoveIndex + 1);
+  }
+  playedMoves.push({ from: move.from, to: move.to, promotion: move.promotion, san: move.san });
+  currentMoveIndex = playedMoves.length - 1;
+}
+
+function updateActiveMoveHighlight() {
+  document.querySelectorAll('#moveList .move-san').forEach((span) => {
+    const ply = parseInt(span.dataset.ply, 10);
+    if (ply === currentMoveIndex) {
+      span.classList.add('active');
+    } else {
+      span.classList.remove('active');
+    }
+  });
+}
+
+function jumpToHistoryPly(ply) {
+  if (playedMoves.length === 0 && ply >= 0) return;
+  if (ply < -1) ply = -1;
+  if (ply >= playedMoves.length) ply = playedMoves.length - 1;
+  currentMoveIndex = ply;
+
+  const replay = new Chess(initialFen);
+  for (let i = 0; i <= ply; i++) {
+    replay.move(playedMoves[i]);
+  }
+  game.load(replay.fen());
+  board.position(replay.fen());
+  el.fenInput.value = replay.fen();
+  clearPositionAnalysis();
+
+  updateActiveMoveHighlight();
+  clearBoardBadges();
+  clearSquareHighlights();
+  if (ply >= 0 && playedMoves[ply]) {
+    highlightLastMove(playedMoves[ply].from, playedMoves[ply].to, 'good');
+  }
+  updateCoachHint();
+}
 
 // ── Engine status ──
 function setEngineStatus(text, state = 'idle') {
@@ -105,6 +224,14 @@ function updateEvalBar(evalCp) {
   el.wdlW.textContent = wdl.w.toFixed(1);
   el.wdlD.textContent = wdl.d.toFixed(1);
   el.wdlL.textContent = wdl.l.toFixed(1);
+}
+
+function clearPositionAnalysis() {
+  positionAnalysisRequestId += 1;
+  el.topMovesContainer.innerHTML = '<div class="placeholder-text">Position changed. Analyze again for current engine lines.</div>';
+  el.pvLines.innerHTML = '';
+  updateEvalBar(0);
+  setEngineStatus('Position changed', 'idle');
 }
 
 // ── Board square coordinate helpers ──
@@ -173,6 +300,277 @@ function clearSquareHighlights() {
   el.boardSquareHighlights.innerHTML = '';
 }
 
+// ── SVG Move Arrow (Coach Mode) ──
+function squareToCenterCoords(sq) {
+  const file = sq.charCodeAt(0) - 97; // a=0, h=7
+  const rank = parseInt(sq[1]) - 1;   // 1=0, 8=7
+  if (boardFlipped) {
+    return { x: (7 - file) * 12.5 + 6.25, y: rank * 12.5 + 6.25 };
+  }
+  return { x: file * 12.5 + 6.25, y: (7 - rank) * 12.5 + 6.25 };
+}
+
+function renderMoveArrow(from, to, rank = 1) {
+  if (!from || !to || !el.boardArrowOverlay) return;
+  const start = squareToCenterCoords(from);
+  const end = squareToCenterCoords(to);
+
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  if (dist === 0) return;
+  const shorten = 3.2; // Shorten slightly so arrowhead aligns cleanly in square center
+  const targetX = end.x - (dx / dist) * shorten;
+  const targetY = end.y - (dy / dist) * shorten;
+
+  if (rank === 1) {
+    // 1. Origin square pointer (primary move)
+    const originCircle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    originCircle.setAttribute('cx', start.x);
+    originCircle.setAttribute('cy', start.y);
+    originCircle.setAttribute('r', '4.5');
+    originCircle.setAttribute('class', 'coach-origin-pointer');
+    el.boardArrowOverlay.appendChild(originCircle);
+
+    const originDot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    originDot.setAttribute('cx', start.x);
+    originDot.setAttribute('cy', start.y);
+    originDot.setAttribute('r', '1.3');
+    originDot.setAttribute('fill', '#22c55e');
+    el.boardArrowOverlay.appendChild(originDot);
+  }
+
+  // 2. Arrow path from origin to destination
+  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  path.setAttribute('d', `M ${start.x} ${start.y} L ${targetX} ${targetY}`);
+  const cls = rank === 1 ? 'coach-arrow-path' : (rank === 2 ? 'coach-arrow-path-secondary' : 'coach-arrow-path-tertiary');
+  const marker = rank === 1 ? 'coachArrowHead' : (rank === 2 ? 'coachArrowHeadSecondary' : 'coachArrowHeadTertiary');
+  path.setAttribute('class', cls);
+  path.setAttribute('marker-end', `url(#${marker})`);
+  el.boardArrowOverlay.appendChild(path);
+
+  if (rank === 1) {
+    // 3. Target square pointer
+    const targetCircle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    targetCircle.setAttribute('cx', end.x);
+    targetCircle.setAttribute('cy', end.y);
+    targetCircle.setAttribute('r', '4.5');
+    targetCircle.setAttribute('class', 'coach-target-pointer');
+    el.boardArrowOverlay.appendChild(targetCircle);
+  }
+}
+
+function clearMoveArrow() {
+  if (!el.boardArrowOverlay) return;
+  el.boardArrowOverlay.querySelectorAll('.coach-arrow-path, .coach-arrow-path-secondary, .coach-arrow-path-tertiary, .coach-origin-pointer, .coach-target-pointer, circle').forEach((p) => p.remove());
+}
+
+// ── Coach State & Multi-PV Analysis ──
+let coachEnabled = false;
+let currentCoachMove = null;
+let coachCandidates = [];
+let activeCandidateIdx = 0;
+let coachReqId = 0;
+
+async function updateCoachHint() {
+  if (!coachEnabled) {
+    clearMoveArrow();
+    if (el.coachCard) el.coachCard.style.display = 'none';
+    return;
+  }
+
+  if (game.isGameOver()) {
+    clearMoveArrow();
+    currentCoachMove = null;
+    coachCandidates = [];
+    if (el.coachCard) {
+      el.coachCard.style.display = 'block';
+      el.coachStatusText.textContent = 'Game Over';
+      let outcome = 'Draw / Stalemate';
+      if (game.isCheckmate()) {
+        outcome = `Checkmate! ${game.turn() === 'w' ? 'Black' : 'White'} wins!`;
+      }
+      el.coachMoveDetail.textContent = outcome;
+      el.applyCoachMoveBtn.style.display = 'none';
+      if (el.coachCandidates) el.coachCandidates.innerHTML = '';
+    }
+    return;
+  }
+
+  const thisReq = ++coachReqId;
+  currentCoachMove = null;
+  clearMoveArrow();
+  if (el.coachCard) {
+    el.coachCard.style.display = 'block';
+    el.coachStatusText.textContent = 'Coach: Calculating options...';
+    el.coachMoveDetail.textContent = 'Stockfish 19 is evaluating candidate moves...';
+    el.applyCoachMoveBtn.style.display = 'none';
+  }
+
+  try {
+    const fen = game.fen();
+    const data = await postJson('/api/analyze/position', {
+      fen,
+      settings: { depth: 10, multiPv: 3 }
+    });
+
+    if (thisReq !== coachReqId) return;
+
+    if (!data.topMoves || data.topMoves.length === 0) {
+      el.coachStatusText.textContent = 'Coach: No legal moves';
+      el.coachMoveDetail.textContent = 'Position has no legal continuations.';
+      clearMoveArrow();
+      if (el.coachCandidates) el.coachCandidates.innerHTML = '';
+      return;
+    }
+
+    coachCandidates = data.topMoves;
+    activeCandidateIdx = 0;
+    renderCoachCandidate(activeCandidateIdx);
+  } catch (err) {
+    if (thisReq === coachReqId && el.coachStatusText) {
+      el.coachStatusText.textContent = 'Coach: Idle';
+      el.coachMoveDetail.textContent = err.message || 'Could not calculate hint.';
+    }
+  }
+}
+
+function renderCoachCandidate(idx) {
+  if (!coachCandidates || coachCandidates.length === 0) return;
+  activeCandidateIdx = Math.max(0, Math.min(coachCandidates.length - 1, idx));
+  const cand = coachCandidates[activeCandidateIdx];
+  const fen = game.fen();
+
+  const from = cand.uci.substring(0, 2);
+  const to = cand.uci.substring(2, 4);
+  const promo = cand.uci.length > 4 ? cand.uci[4] : undefined;
+
+  const tmpGame = new Chess(fen);
+  const pieceObj = tmpGame.get(from);
+  const pieceNames = { p: 'Pawn', n: 'Knight', b: 'Bishop', r: 'Rook', q: 'Queen', k: 'King' };
+  const pieceName = pieceObj ? pieceNames[pieceObj.type] : 'Piece';
+  const pieceIcon = pieceObj ? (PIECE_UNICODE[(pieceObj.color + pieceObj.type)] || '') : '';
+
+  const mObj = tmpGame.move({ from, to, promotion: promo });
+  const san = mObj ? mObj.san : cand.uci;
+
+  currentCoachMove = { from, to, promotion: promo, san, uci: cand.uci, evalCp: cand.evalCp, pieceName, pieceIcon };
+
+  // Render arrows: render secondary/tertiary first, then primary on top
+  clearMoveArrow();
+  coachCandidates.slice(0, 3).forEach((c, i) => {
+    if (i !== activeCandidateIdx) {
+      renderMoveArrow(c.uci.substring(0, 2), c.uci.substring(2, 4), i + 1);
+    }
+  });
+  renderMoveArrow(from, to, 1);
+
+  // Update coach card banner
+  const whiteEval = toWhiteRelativeEval(cand.evalCp, fen);
+  const turnName = fen.split(' ')[1] === 'w' ? 'White' : 'Black';
+  el.coachStatusText.textContent = `Coach: ${turnName} to Move`;
+  el.coachMoveDetail.innerHTML = `
+    <div class="coach-step-banner">
+      <span>👉 Move <strong>${pieceIcon} ${pieceName}</strong> on <strong>${from.toUpperCase()}</strong> ➔ <strong>${to.toUpperCase()}</strong></span>
+      <span class="coach-eval-tag" style="margin-left:auto;">${formatEval(whiteEval)}</span>
+    </div>
+    <div style="margin-top:0.4rem; color:var(--text); font-size:0.8rem;">
+      Play <strong>${san}</strong> &bull; Line: <em>${cand.pv.split(' ').slice(0, 5).join(' ')}</em>
+    </div>
+  `;
+  el.applyCoachMoveBtn.style.display = 'inline-block';
+
+  // Render candidate pills
+  if (el.coachCandidates) {
+    el.coachCandidates.innerHTML = '';
+    coachCandidates.slice(0, 3).forEach((c, i) => {
+      const cFrom = c.uci.substring(0, 2);
+      const cTo = c.uci.substring(2, 4);
+      const cPromo = c.uci.length > 4 ? c.uci[4] : undefined;
+      const cGame = new Chess(fen);
+      const cMove = cGame.move({ from: cFrom, to: cTo, promotion: cPromo });
+      const cSan = cMove ? cMove.san : c.uci;
+      const cEval = toWhiteRelativeEval(c.evalCp, fen);
+
+      const pill = document.createElement('button');
+      pill.className = 'coach-candidate-pill' + (i === activeCandidateIdx ? ' active' : '');
+      pill.innerHTML = `<span class="pill-rank">#${i + 1}</span> <strong>${cSan}</strong> <span class="coach-eval-tag">${formatEval(cEval)}</span>`;
+      pill.addEventListener('click', () => {
+        renderCoachCandidate(i);
+      });
+      el.coachCandidates.appendChild(pill);
+    });
+  }
+}
+
+function applyCoachMove() {
+  if (!currentCoachMove) return;
+  const move = game.move({
+    from: currentCoachMove.from,
+    to: currentCoachMove.to,
+    promotion: currentCoachMove.promotion || 'q'
+  });
+  if (!move) return;
+  recordPlayedMove(move);
+  board.position(game.fen());
+  renderMoves();
+  clearPositionAnalysis();
+  clearExplorerUI();
+  clearBoardBadges();
+  highlightLastMove(currentCoachMove.from, currentCoachMove.to, 'best');
+
+  const sound = game.inCheck() ? 'check' : (move.captured ? 'capture' : 'move');
+  playChessSound(sound);
+
+  updateCoachHint();
+  checkSparringTurn();
+}
+
+// ── Sparring Mode (Play vs Computer) ──
+let sparringActive = false;
+let sparringPlayerColor = 'w';
+let isEngineThinking = false;
+
+async function checkSparringTurn() {
+  if (!sparringActive || isEngineThinking || game.isGameOver()) return;
+  const currentTurn = game.turn();
+  if (currentTurn !== sparringPlayerColor) {
+    isEngineThinking = true;
+    setEngineStatus('Computer thinking...', 'active');
+    try {
+      const depth = Number(el.sparringLevel ? el.sparringLevel.value : 12);
+      const res = await postJson('/api/analyze/position', {
+        fen: game.fen(),
+        settings: { depth, multiPv: 1 }
+      });
+      if (res.topMoves && res.topMoves.length > 0) {
+        const uci = res.topMoves[0].uci;
+        const from = uci.substring(0, 2);
+        const to = uci.substring(2, 4);
+        const promo = uci[4];
+        const moveObj = game.move({ from, to, promotion: promo || 'q' });
+        if (moveObj) {
+          recordPlayedMove(moveObj);
+          board.position(game.fen());
+          renderMoves();
+          clearPositionAnalysis();
+          clearExplorerUI();
+          highlightLastMove(from, to, 'good');
+          const sound = game.inCheck() ? 'check' : (moveObj.captured ? 'capture' : 'move');
+          playChessSound(sound);
+          updateEvalBar(toWhiteRelativeEval(res.bestEvalCp, game.fen()));
+        }
+      }
+    } catch (_e) {
+      setEngineStatus('Engine error', 'error');
+    } finally {
+      isEngineThinking = false;
+      setEngineStatus('Engine idle', 'idle');
+      updateCoachHint();
+    }
+  }
+}
+
 // ── Tab switching ──
 function initTabs() {
   document.querySelectorAll('.tab-btn').forEach((btn) => {
@@ -189,9 +587,8 @@ function initTabs() {
 // ── Move list rendering ──
 function renderMoves() {
   el.moveList.innerHTML = '';
-  const history = game.history({ verbose: true });
 
-  for (let i = 0; i < history.length; i += 2) {
+  for (let i = 0; i < playedMoves.length; i += 2) {
     const moveNum = Math.floor(i / 2) + 1;
     const pair = document.createElement('div');
     pair.className = 'move-pair';
@@ -202,16 +599,18 @@ function renderMoves() {
     pair.appendChild(num);
 
     const white = document.createElement('span');
-    white.className = 'move-san';
-    white.textContent = history[i].san;
+    white.className = 'move-san' + (currentMoveIndex === i ? ' active' : '');
+    white.textContent = playedMoves[i].san;
     white.dataset.ply = i;
+    white.addEventListener('click', () => jumpToHistoryPly(i));
     pair.appendChild(white);
 
-    if (history[i + 1]) {
+    if (playedMoves[i + 1]) {
       const black = document.createElement('span');
-      black.className = 'move-san';
-      black.textContent = history[i + 1].san;
+      black.className = 'move-san' + (currentMoveIndex === i + 1 ? ' active' : '');
+      black.textContent = playedMoves[i + 1].san;
       black.dataset.ply = i + 1;
+      black.addEventListener('click', () => jumpToHistoryPly(i + 1));
       pair.appendChild(black);
     }
 
@@ -223,13 +622,24 @@ function renderMoves() {
 
 // ── Board event handlers ──
 function onDrop(source, target) {
+  if (sparringActive && isEngineThinking) return 'snapback';
+  if (sparringActive && game.turn() !== sparringPlayerColor) return 'snapback';
+
   const move = game.move({ from: source, to: target, promotion: 'q' });
   if (!move) return 'snapback';
+
+  recordPlayedMove(move);
   renderMoves();
+  clearPositionAnalysis();
+  clearExplorerUI();
   clearBoardBadges();
-  allMovesResult = [];
-  allMovesResultFen = null;
   highlightLastMove(source, target, null);
+
+  const sound = game.inCheck() ? 'check' : (move.captured ? 'capture' : 'move');
+  playChessSound(sound);
+
+  updateCoachHint();
+  checkSparringTurn();
   return undefined;
 }
 
@@ -273,17 +683,21 @@ function formatEval(cp) {
 
 // ── Position Analysis ──
 async function analyzePosition() {
+  const requestId = ++positionAnalysisRequestId;
+  const analysisFen = game.fen();
   setEngineStatus('Analyzing position...', 'active');
   try {
     const depth = Number(document.getElementById('depthSelect').value);
     const multiPv = Number(document.getElementById('multipvSelect').value);
     const data = await postJson('/api/analyze/position', {
-      fen: game.fen(),
+      fen: analysisFen,
       settings: { depth, multiPv }
     });
 
+    if (requestId !== positionAnalysisRequestId || game.fen() !== analysisFen) return;
+
     // Convert evals to White-relative for display
-    const fen = game.fen();
+    const fen = analysisFen;
 
     // Update eval bar
     if (data.topMoves && data.topMoves.length > 0) {
@@ -345,6 +759,7 @@ async function analyzePosition() {
 class EventSourcePolyfill {
   constructor(url, { payload }) {
     this.ctrl = new AbortController();
+    this.closed = false;
     this.onmessage = null;
     this.onerror = null;
 
@@ -370,7 +785,7 @@ class EventSourcePolyfill {
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let buf = '';
-        while (true) {
+        while (!this.closed) {
           const { done, value } = await reader.read();
           if (done) break;
           buf += decoder.decode(value, { stream: true });
@@ -378,15 +793,19 @@ class EventSourcePolyfill {
           buf = chunks.pop() || '';
           chunks.forEach((chunk) => {
             const line = chunk.split('\n').find((l) => l.startsWith('data: '));
-            if (line && this.onmessage) this.onmessage({ data: line.slice(6) });
+            if (line && this.onmessage && !this.closed) this.onmessage({ data: line.slice(6) });
           });
         }
       })
       .catch((error) => {
+        if (this.closed || error.name === 'AbortError') return;
         if (this.onerror) this.onerror(error);
       });
   }
-  close() { this.ctrl.abort(); }
+  close() {
+    this.closed = true;
+    try { this.ctrl.abort(); } catch (_e) {}
+  }
 }
 
 // ── Determine piece type from UCI move + FEN ──
@@ -481,6 +900,11 @@ function renderMovesTable(moves, fen) {
 
 // ── Clear explorer UI state ──
 function clearExplorerUI() {
+  explorerRequestId += 1;
+  if (activeExplorerStream) {
+    activeExplorerStream.close();
+    activeExplorerStream = null;
+  }
   el.pieceBadges.innerHTML = '';
   el.allMovesTable.innerHTML = '';
   el.explorerFilters.style.display = 'none';
@@ -498,6 +922,7 @@ function runAllMoves() {
   clearExplorerUI();
 
   const currentFen = game.fen();
+  const requestId = explorerRequestId;
 
   const es = new EventSourcePolyfill('/api/analyze/all-moves', {
     payload: JSON.stringify({
@@ -505,9 +930,14 @@ function runAllMoves() {
       settings: { movetimeMs: Number(document.getElementById('movetimeSelect').value) }
     })
   });
+  activeExplorerStream = es;
 
   const partial = [];
   es.onmessage = (event) => {
+    if (requestId !== explorerRequestId || game.fen() !== currentFen) {
+      es.close();
+      return;
+    }
     const data = JSON.parse(event.data);
     if (data.type === 'partial') {
       partial.push(data.row);
@@ -545,15 +975,18 @@ function runAllMoves() {
       el.explorerProgress.style.display = 'none';
       setEngineStatus(`All-moves complete (${allMovesResult.length} moves)`, 'idle');
       es.close();
+      if (activeExplorerStream === es) activeExplorerStream = null;
     }
   };
 
   es.onerror = (error) => {
+    if (requestId !== explorerRequestId) return;
     const msg = error && error.message ? error.message : 'Streaming failed';
     el.allMovesTable.innerHTML = `<div class="placeholder-text">Error: ${msg}</div>`;
     el.explorerProgress.style.display = 'none';
     setEngineStatus('Explorer failed', 'error');
     es.close();
+    if (activeExplorerStream === es) activeExplorerStream = null;
   };
 }
 
@@ -702,7 +1135,8 @@ async function analyzeGame() {
 
     const fenSequence = [];
     const preMoveSequence = [];
-    const cursor = new Chess();
+    const initialFen = replay.header().FEN || undefined;
+    const cursor = new Chess(initialFen);
     hist.forEach((mv) => {
       preMoveSequence.push(cursor.fen());
       cursor.move(mv);
@@ -717,6 +1151,7 @@ async function analyzeGame() {
 
     const data = await postJson('/api/analyze/game', {
       pgn: el.pgnInput.value,
+      moves: hist.map((m) => m.san),
       fenSequence,
       preMoveSequence,
       settings: { depth: Number(document.getElementById('gameDepthSelect').value) }
@@ -786,6 +1221,7 @@ function navigateToGamePly(ply) {
   game.load(fen);
   board.position(fen);
   el.fenInput.value = fen;
+  clearPositionAnalysis();
 
   // Update eval bar (White-relative)
   updateEvalBar(toWhiteRelativeEval(plyData.evalCp, fen));
@@ -893,9 +1329,18 @@ async function detectOpening() {
           <span class="continuation-freq">${c.eco}</span>
         `;
         row.addEventListener('click', () => {
-          game.move(c.move);
-          board.position(game.fen());
-          renderMoves();
+          const m = game.move(c.move);
+          if (m) {
+            recordPlayedMove(m);
+            board.position(game.fen());
+            renderMoves();
+            clearPositionAnalysis();
+            clearExplorerUI();
+            const sound = game.inCheck() ? 'check' : (m.captured ? 'capture' : 'move');
+            playChessSound(sound);
+            updateCoachHint();
+            checkSparringTurn();
+          }
         });
         el.openingContinuations.appendChild(row);
       });
@@ -912,6 +1357,7 @@ async function detectOpening() {
 function applyExplorerFilters() {
   if (!allMovesResult || allMovesResult.length === 0) return;
 
+  const fen = allMovesResultFen || game.fen();
   let filtered = [...allMovesResult];
   const filterVal = el.filterPiece.value;
 
@@ -925,7 +1371,6 @@ function applyExplorerFilters() {
   if (sortVal === 'delta') {
     filtered.sort((a, b) => (a.deltaCp || 0) - (b.deltaCp || 0));
   } else if (sortVal === 'piece') {
-    const fen = allMovesResultFen || game.fen();
     const order = { k: 0, q: 1, r: 2, b: 3, n: 4, p: 5 };
     // Precompute the moving piece type for each move using a single Chess instance
     const chess = new Chess(fen);
@@ -962,39 +1407,69 @@ function bindUI() {
     if (lastHighlight) {
       highlightLastMove(lastHighlight.from, lastHighlight.to, lastHighlight.category);
     }
+    if (coachEnabled && currentCoachMove) {
+      renderMoveArrow(currentCoachMove.from, currentCoachMove.to);
+    }
   });
 
   document.getElementById('resetBtn').addEventListener('click', () => {
+    initialFen = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+    playedMoves = [];
+    currentMoveIndex = -1;
     game.reset();
     board.start();
     renderMoves();
-    updateEvalBar(0);
+    clearPositionAnalysis();
     clearBoardBadges();
     clearSquareHighlights();
+    clearExplorerUI();
+    updateCoachHint();
+    checkSparringTurn();
   });
 
   document.getElementById('undoBtn').addEventListener('click', () => {
-    game.undo();
-    board.position(game.fen());
-    renderMoves();
-    clearBoardBadges();
-    clearSquareHighlights();
+    if (playedMoves.length > 0) {
+      playedMoves.pop();
+      jumpToHistoryPly(playedMoves.length - 1);
+      renderMoves();
+    } else {
+      game.undo();
+      board.position(game.fen());
+      renderMoves();
+      clearPositionAnalysis();
+      clearBoardBadges();
+      clearSquareHighlights();
+      clearExplorerUI();
+      updateCoachHint();
+    }
   });
 
   document.getElementById('loadFenBtn').addEventListener('click', () => {
     const fen = el.fenInput.value.trim();
     if (!fen) return;
-    if (!game.load(fen)) {
+    let loaded = false;
+    try {
+      loaded = game.load(fen);
+    } catch (_error) {
+      loaded = false;
+    }
+    if (!loaded) {
       el.fenInput.style.borderColor = 'var(--mistake)';
       setTimeout(() => { el.fenInput.style.borderColor = ''; }, 1500);
       return;
     }
+    initialFen = fen;
+    playedMoves = [];
+    currentMoveIndex = -1;
     board.position(game.fen());
     renderMoves();
+    clearPositionAnalysis();
     clearBoardBadges();
     clearSquareHighlights();
     // Clear explorer UI state so no stale results remain after FEN change.
     clearExplorerUI();
+    updateCoachHint();
+    checkSparringTurn();
   });
 
   document.getElementById('copyFenBtn').addEventListener('click', () => {
@@ -1010,6 +1485,20 @@ function bindUI() {
   document.getElementById('analyzeGameBtn').addEventListener('click', analyzeGame);
   document.getElementById('openingBtn').addEventListener('click', detectOpening);
 
+  // Move history navigation buttons
+  if (el.moveNavStart) {
+    el.moveNavStart.addEventListener('click', () => jumpToHistoryPly(-1));
+  }
+  if (el.moveNavPrev) {
+    el.moveNavPrev.addEventListener('click', () => jumpToHistoryPly(currentMoveIndex - 1));
+  }
+  if (el.moveNavNext) {
+    el.moveNavNext.addEventListener('click', () => jumpToHistoryPly(currentMoveIndex + 1));
+  }
+  if (el.moveNavEnd) {
+    el.moveNavEnd.addEventListener('click', () => jumpToHistoryPly(playedMoves.length - 1));
+  }
+
   // Game review navigation
   document.getElementById('navFirst').addEventListener('click', () => navigateToGamePly(0));
   document.getElementById('navPrev').addEventListener('click', () => navigateToGamePly(Math.max(0, gameReviewPly - 1)));
@@ -1024,22 +1513,72 @@ function bindUI() {
   el.filterPiece.addEventListener('change', applyExplorerFilters);
   el.sortMoves.addEventListener('change', applyExplorerFilters);
 
-  // Keyboard navigation for game review
+  // Global Keyboard Shortcuts (Coach, Move Play, Undo, Flip, Navigation)
   document.addEventListener('keydown', (e) => {
-    if (!gameReviewData) return;
-    if (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT') return;
-    if (e.key === 'ArrowLeft') {
+    if (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+
+    // Toggle Coach: 'H'
+    if (e.key === 'h' || e.key === 'H') {
       e.preventDefault();
-      navigateToGamePly(Math.max(0, gameReviewPly - 1));
-    } else if (e.key === 'ArrowRight') {
+      if (el.coachToggle) {
+        el.coachToggle.checked = !el.coachToggle.checked;
+        el.coachToggle.dispatchEvent(new Event('change'));
+      }
+      return;
+    }
+
+    // Play Coach Move: Space
+    if (e.code === 'Space') {
       e.preventDefault();
-      navigateToGamePly(Math.min(gameReviewData.plies.length - 1, gameReviewPly + 1));
-    } else if (e.key === 'Home') {
+      applyCoachMove();
+      return;
+    }
+
+    // Flip Board: 'F'
+    if (e.key === 'f' || e.key === 'F') {
       e.preventDefault();
-      navigateToGamePly(0);
-    } else if (e.key === 'End') {
+      const flipBtn = document.getElementById('flipBtn');
+      if (flipBtn) flipBtn.click();
+      return;
+    }
+
+    // Undo Move: 'Z'
+    if ((e.key === 'z' || e.key === 'Z') && !e.shiftKey) {
       e.preventDefault();
-      navigateToGamePly(gameReviewData.plies.length - 1);
+      const undoBtn = document.getElementById('undoBtn');
+      if (undoBtn) undoBtn.click();
+      return;
+    }
+
+    // Navigation: if in game review data, navigate review; else navigate main move history
+    if (gameReviewData) {
+      if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        navigateToGamePly(Math.max(0, gameReviewPly - 1));
+      } else if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        navigateToGamePly(Math.min(gameReviewData.plies.length - 1, gameReviewPly + 1));
+      } else if (e.key === 'Home') {
+        e.preventDefault();
+        navigateToGamePly(0);
+      } else if (e.key === 'End') {
+        e.preventDefault();
+        navigateToGamePly(gameReviewData.plies.length - 1);
+      }
+    } else {
+      if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        jumpToHistoryPly(currentMoveIndex - 1);
+      } else if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        jumpToHistoryPly(currentMoveIndex + 1);
+      } else if (e.key === 'Home') {
+        e.preventDefault();
+        jumpToHistoryPly(-1);
+      } else if (e.key === 'End') {
+        e.preventDefault();
+        jumpToHistoryPly(playedMoves.length - 1);
+      }
     }
   });
 
@@ -1051,13 +1590,113 @@ function bindUI() {
     const ply = Math.round((x / rect.width) * (gameReviewData.plies.length - 1));
     navigateToGamePly(Math.max(0, Math.min(gameReviewData.plies.length - 1, ply)));
   });
+
+  // Window resize handler for board and eval graph
+  let resizeTimeout;
+  window.addEventListener('resize', () => {
+    clearTimeout(resizeTimeout);
+    resizeTimeout = setTimeout(() => {
+      if (board && typeof board.resize === 'function') {
+        board.resize();
+      }
+      if (gameReviewData && gameReviewData.plies) {
+        drawEvalGraph(gameReviewData.plies, gameReviewPly);
+      }
+    }, 150);
+  });
+
+  // Coach mode toggle & Play Move button
+  if (el.coachToggle) {
+    el.coachToggle.checked = coachEnabled;
+    el.coachToggle.addEventListener('change', (e) => {
+      coachEnabled = e.target.checked;
+      try { localStorage.setItem('pawnforge_coach', coachEnabled ? 'true' : 'false'); } catch (_e) {}
+      if (coachEnabled) {
+        updateCoachHint();
+      } else {
+        clearMoveArrow();
+        if (el.coachCard) el.coachCard.style.display = 'none';
+      }
+    });
+  }
+
+  if (el.applyCoachMoveBtn) {
+    el.applyCoachMoveBtn.addEventListener('click', applyCoachMove);
+  }
+
+  // Sound toggle button
+  if (el.soundToggleBtn) {
+    el.soundToggleBtn.addEventListener('click', () => {
+      soundEnabled = !soundEnabled;
+      try { localStorage.setItem('pawnforge_sound', soundEnabled ? 'true' : 'false'); } catch (_e) {}
+      el.soundToggleBtn.innerHTML = soundEnabled ? '&#128266;' : '&#128263;';
+      el.soundToggleBtn.classList.toggle('muted', !soundEnabled);
+      el.soundToggleBtn.title = soundEnabled ? 'Mute Sounds' : 'Unmute Sounds';
+    });
+  }
+
+  // Sparring Mode controls
+  if (el.sparringToggle) {
+    el.sparringToggle.addEventListener('change', (e) => {
+      sparringActive = e.target.checked;
+      if (sparringActive) {
+        sparringPlayerColor = el.sparringColor ? el.sparringColor.value : 'w';
+        if (sparringPlayerColor === 'b' && !boardFlipped) {
+          board.flip();
+          boardFlipped = true;
+        } else if (sparringPlayerColor === 'w' && boardFlipped) {
+          board.flip();
+          boardFlipped = false;
+        }
+        checkSparringTurn();
+      }
+    });
+  }
+  if (el.sparringColor) {
+    el.sparringColor.addEventListener('change', (e) => {
+      sparringPlayerColor = e.target.value;
+      if (sparringPlayerColor === 'b' && !boardFlipped) {
+        board.flip();
+        boardFlipped = true;
+      } else if (sparringPlayerColor === 'w' && boardFlipped) {
+        board.flip();
+        boardFlipped = false;
+      }
+      if (sparringActive) {
+        checkSparringTurn();
+      }
+    });
+  }
+}
+
+// ── Embed Mode & Query Param Configuration ──
+const urlParams = new URLSearchParams(window.location.search);
+if (urlParams.get('embed') === 'true' || urlParams.get('embed') === '1') {
+  document.body.classList.add('embed-mode');
+}
+if (urlParams.get('coach') === 'true' || urlParams.get('coach') === '1') {
+  coachEnabled = true;
+} else {
+  try {
+    coachEnabled = localStorage.getItem('pawnforge_coach') === 'true';
+  } catch (_e) {}
 }
 
 // ── Initialize ──
+try {
+  const savedSound = localStorage.getItem('pawnforge_sound');
+  if (savedSound !== null) soundEnabled = savedSound === 'true';
+} catch (_e) {}
+if (el.soundToggleBtn) {
+  el.soundToggleBtn.innerHTML = soundEnabled ? '&#128266;' : '&#128263;';
+  el.soundToggleBtn.classList.toggle('muted', !soundEnabled);
+  el.soundToggleBtn.title = soundEnabled ? 'Mute Sounds' : 'Unmute Sounds';
+}
+
 board = window.Chessboard('board', {
   draggable: true,
   position: 'start',
-  pieceTheme: 'https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/www/img/chesspieces/wikipedia/{piece}.png',
+  pieceTheme: (piece) => PIECE_THEME[piece],
   onDrop,
   onSnapEnd
 });
@@ -1066,3 +1705,6 @@ initTabs();
 bindUI();
 renderMoves();
 updateEvalBar(0);
+if (coachEnabled) {
+  updateCoachHint();
+}

@@ -291,10 +291,16 @@ body {
 .board-square-highlight.highlight-neutral    { background: rgba(255,242,105,0.15); }
 
 .board-controls {
-  display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
+  display: flex;
+  align-items: center;
   gap: 0.4rem;
   margin: 0.6rem 0;
+  flex-wrap: wrap;
+}
+
+.board-controls button {
+  flex: 1;
+  min-width: 70px;
 }
 
 .fen-row {
@@ -841,9 +847,399 @@ select {
 ::-webkit-scrollbar-thumb { background: var(--panel-border); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
 
-/* ── Responsive ── */
-@media (max-width: 900px) {
-  .layout { grid-template-columns: 1fr; }
-  .topbar { flex-direction: column; align-items: flex-start; }
-  .topbar-nav { width: 100%; overflow-x: auto; }
+/* ── Board Arrow Overlay (Coach move suggestions) ── */
+.board-arrow-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 80;
+}
+
+.coach-arrow-path {
+  stroke: #22c55e;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  fill: none;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.6));
+  animation: arrowPulse 2s ease-in-out infinite alternate;
+}
+
+.coach-origin-pointer {
+  fill: rgba(34, 197, 94, 0.25);
+  stroke: #22c55e;
+  stroke-width: 0.7;
+}
+
+.coach-target-pointer {
+  fill: rgba(34, 197, 94, 0.15);
+  stroke: #22c55e;
+  stroke-width: 0.7;
+  stroke-dasharray: 1.5, 1;
+}
+
+.coach-step-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  background: rgba(34, 197, 94, 0.15);
+  border: 1px solid rgba(34, 197, 94, 0.4);
+  padding: 0.35rem 0.6rem;
+  border-radius: 6px;
+  margin-top: 0.4rem;
+  font-weight: 600;
+  font-size: 0.82rem;
+  color: #fff;
+}
+
+.coach-step-banner strong {
+  color: #4ade80;
+}
+
+@keyframes arrowPulse {
+  0% { stroke-opacity: 0.85; }
+  100% { stroke-opacity: 1; stroke-width: 2.6; }
+}
+
+/* ── Coach Toggle Switch ── */
+.coach-toggle-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  background: var(--surface);
+  border: 1px solid var(--panel-border);
+  padding: 0.35rem 0.65rem;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  user-select: none;
+  font-size: 0.8rem;
+  font-weight: 600;
+  transition: all 0.2s ease;
+}
+
+.coach-toggle-label:hover {
+  border-color: var(--good);
+}
+
+.coach-label-text {
+  color: var(--text);
+}
+
+.coach-toggle-label input {
+  display: none;
+}
+
+.coach-slider {
+  position: relative;
+  width: 32px;
+  height: 18px;
+  background-color: var(--panel-border);
+  border-radius: 20px;
+  transition: background-color 0.25s;
+  display: inline-block;
+}
+
+.coach-slider::before {
+  content: "";
+  position: absolute;
+  height: 14px;
+  width: 14px;
+  left: 2px;
+  bottom: 2px;
+  background-color: white;
+  border-radius: 50%;
+  transition: transform 0.25s;
+}
+
+.coach-toggle-label input:checked + .coach-slider {
+  background-color: var(--good);
+}
+
+.coach-toggle-label input:checked + .coach-slider::before {
+  transform: translateX(14px);
+}
+
+/* ── Coach Card ── */
+.coach-card {
+  background: linear-gradient(135deg, rgba(34, 197, 94, 0.08) 0%, rgba(17, 24, 39, 0.95) 100%);
+  border: 1px solid rgba(34, 197, 94, 0.35);
+  border-radius: var(--radius);
+  padding: 0.75rem 0.9rem;
+  margin: 0.6rem 0;
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+  animation: fadeIn 0.2s ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.coach-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.4rem;
+}
+
+.coach-title {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-weight: 700;
+  font-size: 0.85rem;
+  color: var(--text);
+}
+
+.coach-icon {
+  font-size: 1rem;
+}
+
+.coach-apply-btn {
+  background: var(--good);
+  color: #000;
+  border: none;
+  font-weight: 700;
+  font-size: 0.75rem;
+  padding: 0.25rem 0.6rem;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.coach-apply-btn:hover {
+  background: #16a34a;
+  transform: scale(1.02);
+}
+
+.coach-body {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.coach-move-highlight {
+  display: inline-block;
+  font-weight: 700;
+  color: #fff;
+  background: rgba(34, 197, 94, 0.25);
+  border: 1px solid rgba(34, 197, 94, 0.5);
+  padding: 1px 6px;
+  border-radius: 4px;
+  margin-right: 0.3rem;
+}
+
+.coach-eval-tag {
+  display: inline-block;
+  font-weight: 600;
+  font-size: 0.75rem;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text);
+}
+
+/* ── Secondary & Tertiary Move Arrows ── */
+.coach-arrow-path-secondary {
+  stroke: #3b82f6;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  fill: none;
+  stroke-dasharray: 4, 1.5;
+  stroke-opacity: 0.8;
+  filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.5));
+}
+
+.coach-arrow-path-tertiary {
+  stroke: #f59e0b;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  fill: none;
+  stroke-dasharray: 3, 2;
+  stroke-opacity: 0.75;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.5));
+}
+
+/* ── Candidate Move Pills ── */
+.coach-candidates-list {
+  display: flex;
+  gap: 0.35rem;
+  margin-top: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.coach-candidate-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 0.76rem;
+  background: var(--surface);
+  border: 1px solid var(--panel-border);
+  cursor: pointer;
+  transition: all 0.15s;
+  color: var(--text-muted);
+  user-select: none;
+}
+
+.coach-candidate-pill:hover {
+  border-color: var(--text-dim);
+  color: var(--text);
+}
+
+.coach-candidate-pill.active {
+  border-color: var(--good);
+  background: rgba(34, 197, 94, 0.15);
+  color: #fff;
+  font-weight: 700;
+}
+
+.coach-candidate-pill .pill-rank {
+  font-size: 0.68rem;
+  opacity: 0.7;
+}
+
+/* ── Sparring / Play vs Computer Row ── */
+.sparring-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: var(--surface);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-sm);
+  padding: 0.4rem 0.65rem;
+  margin: 0.5rem 0;
+  flex-wrap: wrap;
+}
+
+.sparring-toggle-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  cursor: pointer;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text);
+  user-select: none;
+}
+
+.sparring-toggle-label input {
+  display: none;
+}
+
+.sparring-toggle-label input:checked + .coach-slider {
+  background-color: var(--accent);
+}
+
+.sparring-toggle-label input:checked + .coach-slider::before {
+  transform: translateX(14px);
+}
+
+.sparring-row select {
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  color: var(--text);
+  font-size: 0.78rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+/* ── Move List Header & Interactive Navigation ── */
+.move-list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.4rem;
+}
+
+.move-list-header h3 {
+  margin-bottom: 0;
+}
+
+.move-nav-controls {
+  display: flex;
+  gap: 3px;
+}
+
+.move-nav-controls button {
+  background: var(--surface);
+  border: 1px solid var(--panel-border);
+  color: var(--text-muted);
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-size: 0.72rem;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.move-nav-controls button:hover {
+  background: var(--panel);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+.move-san {
+  cursor: pointer;
+  padding: 1px 4px;
+  border-radius: 3px;
+  transition: background 0.1s;
+}
+
+.move-san:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+}
+
+.move-san.active {
+  background: var(--accent);
+  color: #fff;
+  font-weight: 700;
+}
+
+.icon-btn {
+  background: var(--surface);
+  border: 1px solid var(--panel-border);
+  color: var(--text);
+  border-radius: var(--radius-sm);
+  padding: 0.35rem 0.55rem;
+  cursor: pointer;
+  font-size: 0.85rem;
+  transition: all 0.15s;
+}
+
+.icon-btn:hover {
+  border-color: var(--accent);
+}
+
+.icon-btn.muted {
+  opacity: 0.45;
+  filter: grayscale(1);
+}
+
+/* ── Embed Mode for Personal Websites ── */
+body.embed-mode {
+  background: transparent;
+}
+
+body.embed-mode #app {
+  padding: 0.25rem;
+  max-width: 100%;
+}
+
+body.embed-mode .topbar {
+  display: none;
+}
+
+body.embed-mode .layout {
+  grid-template-columns: 1fr;
+  gap: 0.5rem;
+}
+
+body.embed-mode .center-panel {
+  display: none;
 }

@@ -14,7 +14,6 @@ let gameReviewController = null;
 let gameReviewHistory = [];
 
 // ── Piece symbol map (for display) ──
-const PIECE_SYMBOLS = { p: '', n: 'N', b: 'B', r: 'R', q: 'Q', k: 'K' };
 const PIECE_UNICODE = {
   wp: '\u2659', wn: '\u2658', wb: '\u2657', wr: '\u2656', wq: '\u2655', wk: '\u2654',
   bp: '\u265F', bn: '\u265E', bb: '\u265D', br: '\u265C', bq: '\u265B', bk: '\u265A'
@@ -804,13 +803,13 @@ class EventSourcePolyfill {
     })
       .then(async (res) => {
         if (!res.ok) {
-          let details = '';
+          let details;
           try { details = await res.text(); } catch (_e) { details = ''; }
           throw new Error(details || `Request failed with status ${res.status}`);
         }
         const contentType = res.headers.get('content-type') || '';
         if (!contentType.includes('text/event-stream')) {
-          let details = '';
+          let details;
           try { details = await res.text(); } catch (_e) { details = ''; }
           throw new Error(details || `Expected SSE but got: ${contentType}`);
         }
@@ -866,7 +865,6 @@ function renderPieceBadges(moves, fen) {
 
   // Order: K, Q, R, B, N, P
   const order = ['k', 'q', 'r', 'b', 'n', 'p'];
-  const turn = fen.split(' ')[1] || 'w';
   const sortedKeys = [...byPiece.keys()].sort((a, b) => {
     return order.indexOf(a[1]) - order.indexOf(b[1]);
   });
@@ -1211,7 +1209,7 @@ async function analyzeGame() {
     el.gameReviewNav.style.display = 'flex';
 
     // Render annotated move list
-    renderGameMoveList(data, hist);
+    renderGameMoveList(data);
 
     // Render game summary
     renderGameSummary(data, hist);
@@ -1225,7 +1223,7 @@ async function analyzeGame() {
   }
 }
 
-function renderGameMoveList(data, hist) {
+function renderGameMoveList(data) {
   el.gameMoveList.innerHTML = '';
 
   data.plies.forEach((p, i) => {
@@ -1536,7 +1534,7 @@ function bindUI() {
   document.getElementById('loadFenBtn').addEventListener('click', () => {
     const fen = el.fenInput.value.trim();
     if (!fen) return;
-    let loaded = false;
+    let loaded;
     try {
       game.load(fen);
       loaded = true;

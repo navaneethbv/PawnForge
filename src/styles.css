@@ -310,6 +310,7 @@ body {
 }
 
 .fen-row input {
+  min-width: 0;
   flex: 1;
   background: var(--surface);
   border: 1px solid var(--panel-border);
@@ -1267,4 +1268,3 @@ body.embed-mode .center-panel {
 
 .move-san, .game-move { font: inherit; background: transparent; border: 0; color: inherit; }
 .move-san:focus-visible, .game-move:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.fen-row input { min-width: 0; }

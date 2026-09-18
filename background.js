@@ -11,7 +11,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const controller = new AbortController();
   requests.set(tabId, controller);
   const timer = setTimeout(() => controller.abort(), 20000);
-  fetch(url, {
+  const localEndpoint = new URL('http://127.0.0.1/api/analyze/position');
+  localEndpoint.port = String(Number(url.port || 80));
+  fetch(localEndpoint, {
+    redirect: 'error',
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ fen: message.payload?.fen, settings: { depth: 8, multiPv: 3 } }),
     signal: controller.signal

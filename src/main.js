@@ -383,6 +383,23 @@ let coachCandidates = [];
 let activeCandidateIdx = 0;
 let coachReqId = 0;
 
+function showCoachGameOver() {
+  clearMoveArrow();
+  currentCoachMove = null;
+  coachCandidates = [];
+  if (el.coachCard) {
+    el.coachCard.style.display = 'block';
+    el.coachStatusText.textContent = 'Game Over';
+    let outcome = 'Draw / Stalemate';
+    if (game.isCheckmate()) {
+      outcome = `Checkmate! ${game.turn() === 'w' ? 'Black' : 'White'} wins!`;
+    }
+    el.coachMoveDetail.textContent = outcome;
+    el.applyCoachMoveBtn.style.display = 'none';
+    if (el.coachCandidates) el.coachCandidates.innerHTML = '';
+  }
+}
+
 async function updateCoachHint() {
   const thisReq = ++coachReqId;
   if (!coachEnabled) {
@@ -392,20 +409,7 @@ async function updateCoachHint() {
   }
 
   if (game.isGameOver()) {
-    clearMoveArrow();
-    currentCoachMove = null;
-    coachCandidates = [];
-    if (el.coachCard) {
-      el.coachCard.style.display = 'block';
-      el.coachStatusText.textContent = 'Game Over';
-      let outcome = 'Draw / Stalemate';
-      if (game.isCheckmate()) {
-        outcome = `Checkmate! ${game.turn() === 'w' ? 'Black' : 'White'} wins!`;
-      }
-      el.coachMoveDetail.textContent = outcome;
-      el.applyCoachMoveBtn.style.display = 'none';
-      if (el.coachCandidates) el.coachCandidates.innerHTML = '';
-    }
+    showCoachGameOver();
     return;
   }
 
@@ -550,6 +554,27 @@ function invalidateSparring() {
   isEngineThinking = false;
 }
 
+function applySparringResult(res, fen) {
+  if (!res.topMoves?.length) return;
+  const uci = res.topMoves[0].uci;
+  const from = uci.substring(0, 2);
+  const to = uci.substring(2, 4);
+  const promo = uci[4];
+  const moveObj = game.move({ from, to, promotion: promo || 'q' });
+  if (moveObj) {
+    recordPlayedMove(moveObj);
+    board.position(game.fen());
+    renderMoves();
+    clearPositionAnalysis();
+    clearExplorerUI();
+    highlightLastMove(from, to, 'good');
+    const sound = game.inCheck() ? 'check' : (moveObj.captured ? 'capture' : 'move');
+    playChessSound(sound);
+    updateEvalBar(toWhiteRelativeEval(res.bestEvalCp, fen));
+    updateCoachHint();
+  }
+}
+
 async function checkSparringTurn() {
   if (!sparringActive || isEngineThinking || game.isGameOver()) return;
   const currentTurn = game.turn();
@@ -567,25 +592,7 @@ async function checkSparringTurn() {
         settings: { depth, multiPv: 1 }
       }, sparringController.signal);
       if (requestId !== sparringRequestId || !sparringActive || playerColor !== sparringPlayerColor || game.fen() !== fen) return;
-      if (res.topMoves && res.topMoves.length > 0) {
-        const uci = res.topMoves[0].uci;
-        const from = uci.substring(0, 2);
-        const to = uci.substring(2, 4);
-        const promo = uci[4];
-        const moveObj = game.move({ from, to, promotion: promo || 'q' });
-        if (moveObj) {
-          recordPlayedMove(moveObj);
-          board.position(game.fen());
-          renderMoves();
-          clearPositionAnalysis();
-          clearExplorerUI();
-          highlightLastMove(from, to, 'good');
-          const sound = game.inCheck() ? 'check' : (moveObj.captured ? 'capture' : 'move');
-          playChessSound(sound);
-          updateEvalBar(toWhiteRelativeEval(res.bestEvalCp, fen));
-          updateCoachHint();
-        }
-      }
+      applySparringResult(res, fen);
     } catch (error) {
       if (requestId === sparringRequestId && error.name !== 'AbortError') setEngineStatus('Engine error', 'error');
     } finally {
@@ -1442,6 +1449,38 @@ function applyExplorerFilters() {
   renderMovesTable(filtered, fen);
 }
 
+function navigateWithKeyboard(event) {
+  const review = gameReviewData && document.getElementById('tab-game-review').classList.contains('active');
+  const current = review ? gameReviewPly : currentMoveIndex;
+  const first = review ? 0 : -1;
+  const last = review ? gameReviewData.plies.length - 1 : playedMoves.length - 1;
+  const targets = { ArrowLeft: current - 1, ArrowRight: current + 1, Home: first, End: last };
+  if (!(event.key in targets)) return;
+  event.preventDefault();
+  const target = Math.max(first, Math.min(last, targets[event.key]));
+  if (review) navigateToGamePly(target);
+  else jumpToHistoryPly(target);
+}
+
+function handleKeyboardShortcut(event) {
+  if (['TEXTAREA', 'INPUT', 'SELECT'].includes(event.target.tagName) || event.target.isContentEditable) return;
+  const actions = {
+    h: () => { el.coachToggle.checked = !el.coachToggle.checked; el.coachToggle.dispatchEvent(new Event('change')); },
+    f: () => document.getElementById('flipBtn').click(),
+    z: () => document.getElementById('undoBtn').click()
+  };
+  const key = event.key.toLowerCase();
+  if (key in actions && !(key === 'z' && event.shiftKey)) {
+    event.preventDefault();
+    actions[key]();
+  } else if (event.code === 'Space' && event.target.tagName !== 'BUTTON') {
+    event.preventDefault();
+    applyCoachMove();
+  } else {
+    navigateWithKeyboard(event);
+  }
+}
+
 // ── Bind all UI events ──
 function bindUI() {
   document.getElementById('flipBtn').addEventListener('click', () => {
@@ -1565,73 +1604,7 @@ function bindUI() {
   el.sortMoves.addEventListener('change', applyExplorerFilters);
 
   // Global Keyboard Shortcuts (Coach, Move Play, Undo, Flip, Navigation)
-  document.addEventListener('keydown', (e) => {
-    if (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
-
-    // Toggle Coach: 'H'
-    if (e.key === 'h' || e.key === 'H') {
-      e.preventDefault();
-      if (el.coachToggle) {
-        el.coachToggle.checked = !el.coachToggle.checked;
-        el.coachToggle.dispatchEvent(new Event('change'));
-      }
-      return;
-    }
-
-    // Play Coach Move: Space
-    if (e.code === 'Space' && e.target.tagName !== 'BUTTON') {
-      e.preventDefault();
-      applyCoachMove();
-      return;
-    }
-
-    // Flip Board: 'F'
-    if (e.key === 'f' || e.key === 'F') {
-      e.preventDefault();
-      const flipBtn = document.getElementById('flipBtn');
-      if (flipBtn) flipBtn.click();
-      return;
-    }
-
-    // Undo Move: 'Z'
-    if ((e.key === 'z' || e.key === 'Z') && !e.shiftKey) {
-      e.preventDefault();
-      const undoBtn = document.getElementById('undoBtn');
-      if (undoBtn) undoBtn.click();
-      return;
-    }
-
-    // Navigation: if in game review data, navigate review; else navigate main move history
-    if (gameReviewData && document.getElementById('tab-game-review').classList.contains('active')) {
-      if (e.key === 'ArrowLeft') {
-        e.preventDefault();
-        navigateToGamePly(Math.max(0, gameReviewPly - 1));
-      } else if (e.key === 'ArrowRight') {
-        e.preventDefault();
-        navigateToGamePly(Math.min(gameReviewData.plies.length - 1, gameReviewPly + 1));
-      } else if (e.key === 'Home') {
-        e.preventDefault();
-        navigateToGamePly(0);
-      } else if (e.key === 'End') {
-        e.preventDefault();
-        navigateToGamePly(gameReviewData.plies.length - 1);
-      }
-    } else {
-      if (e.key === 'ArrowLeft') {
-        e.preventDefault();
-        jumpToHistoryPly(currentMoveIndex - 1);
-      } else if (e.key === 'ArrowRight') {
-        e.preventDefault();
-        jumpToHistoryPly(currentMoveIndex + 1);
-      } else if (e.key === 'Home') {
-        e.preventDefault();
-        jumpToHistoryPly(-1);
-      } else if (e.key === 'End') {
-        e.preventDefault();
-        jumpToHistoryPly(playedMoves.length - 1);
-      }
-    }
-  });
+  document.addEventListener('keydown', handleKeyboardShortcut);
 
   // Eval graph click to navigate
   el.evalGraph.addEventListener('click', (e) => {

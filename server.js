@@ -32,54 +32,32 @@ function requireInteger(value, { name, defaultValue, min, max }) {
   return parsed;
 }
 
+function validatePlacement(placement) {
+  const ranks = placement.split('/');
+  if (ranks.length !== 8) throw new HttpError(400, 'Invalid FEN.');
+  for (const rank of ranks) {
+    if (!/^[prnbqkPRNBQK1-8]+$/.test(rank)) throw new HttpError(400, 'Invalid FEN.');
+    const squares = [...rank].reduce((count, symbol) => count + (Number(symbol) || 1), 0);
+    if (squares !== 8) throw new HttpError(400, 'Invalid FEN.');
+  }
+  const count = (pattern) => (placement.match(pattern) || []).length;
+  const counts = [count(/[prnbqkPRNBQK]/g), count(/P/g), count(/p/g), count(/K/g), count(/k/g)];
+  if (counts[0] > 32 || counts[1] > 8 || counts[2] > 8 || counts[3] !== 1 || counts[4] !== 1) {
+    throw new HttpError(400, 'Invalid FEN.');
+  }
+}
+
 function validateFen(value) {
   if (typeof value !== 'string' || value.length > 128 || /[\r\n]/.test(value)) {
     throw new HttpError(400, 'Invalid FEN.');
   }
-
   const fields = value.trim().split(/\s+/);
   if (fields.length !== 6) throw new HttpError(400, 'Invalid FEN.');
-
-  const ranks = fields[0].split('/');
-  if (ranks.length !== 8) throw new HttpError(400, 'Invalid FEN.');
-
-  let whiteKingCount = 0;
-  let blackKingCount = 0;
-  let pieceCount = 0;
-  let whitePawnCount = 0;
-  let blackPawnCount = 0;
-  for (const rank of ranks) {
-    let squares = 0;
-    for (const symbol of rank) {
-      if (/^[1-8]$/.test(symbol)) {
-        squares += Number(symbol);
-      } else if (/^[prnbqkPRNBQK]$/.test(symbol)) {
-        squares += 1;
-        pieceCount += 1;
-        if (symbol === 'K') whiteKingCount += 1;
-        if (symbol === 'k') blackKingCount += 1;
-        if (symbol === 'P') whitePawnCount += 1;
-        if (symbol === 'p') blackPawnCount += 1;
-      } else {
-        throw new HttpError(400, 'Invalid FEN.');
-      }
-    }
-    if (squares !== 8) throw new HttpError(400, 'Invalid FEN.');
-  }
-
-  if (pieceCount > 32 || whitePawnCount > 8 || blackPawnCount > 8 || whiteKingCount !== 1 || blackKingCount !== 1 || !/^[wb]$/.test(fields[1])) {
+  validatePlacement(fields[0]);
+  const patterns = [/^[wb]$/, /^(?:-|[KQkq]+)$/, /^(?:-|[a-h][36])$/, /^\d+$/, /^[1-9]\d*$/];
+  if (patterns.some((pattern, index) => !pattern.test(fields[index + 1])) || new Set(fields[2]).size !== fields[2].length) {
     throw new HttpError(400, 'Invalid FEN.');
   }
-  if (!/^(?:-|[KQkq]+)$/.test(fields[2]) || new Set(fields[2]).size !== fields[2].length) {
-    throw new HttpError(400, 'Invalid FEN.');
-  }
-  if (!/^(?:-|[a-h][36])$/.test(fields[3])) {
-    throw new HttpError(400, 'Invalid FEN.');
-  }
-  if (!/^\d+$/.test(fields[4]) || !/^[1-9]\d*$/.test(fields[5])) {
-    throw new HttpError(400, 'Invalid FEN.');
-  }
-
   return fields.join(' ');
 }
 
@@ -470,6 +448,180 @@ function parseBody(req, signal, maxBytes = 10 * 1024 * 1024) {
   });
 }
 
+async function readJsonObject(req, signal) {
+  const body = await parseBody(req, signal);
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw new HttpError(400, 'Request body must be a JSON object.');
+  }
+  return body;
+}
+
+async function analyzePositionRequest(req, res, signal) {
+  if (!pool.enabled) return sendJson(res, 503, { error: 'Stockfish unavailable.' });
+  const body = await readJsonObject(req, signal);
+  const fen = validateFen(body.fen);
+  const result = await pool.analyzePosition({
+    fen,
+    signal,
+    depth: requireInteger(body.settings?.depth, { name: 'depth', defaultValue: 12, min: 1, max: 20 }),
+    multipv: requireInteger(body.settings?.multiPv, { name: 'multiPv', defaultValue: 3, min: 1, max: 5 })
+  });
+  return sendJson(res, 200, result);
+}
+
+async function analyzeAllMovesRequest(req, res, signal) {
+  if (!pool.enabled) return sendJson(res, 503, { error: 'Stockfish unavailable.' });
+  const body = await readJsonObject(req, signal);
+  const fen = validateFen(body.fen);
+
+  const movetime = requireInteger(body.settings?.movetimeMs, {
+    name: 'movetimeMs',
+    defaultValue: 120,
+    min: 20,
+    max: 1000
+  });
+  const legal = await pool.legalMoves(fen, signal);
+
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive'
+  });
+
+  let clientDisconnected = false;
+  res.on('close', () => { clientDisconnected = true; });
+
+  const rows = [];
+  for (let i = 0; i < legal.length; i += 1) {
+    if (clientDisconnected) return;
+    const move = legal[i];
+    const evalCp = await pool.evaluateMove(fen, move, movetime, signal);
+    // Negate eval since it's from opponent's perspective after the move
+    const row = { uci: move, evalCp: -evalCp };
+    rows.push(row);
+    res.write(`data: ${JSON.stringify({ type: 'partial', progress: (i + 1) / legal.length, row })}\n\n`);
+  }
+
+  rows.sort((a, b) => b.evalCp - a.evalCp);
+  const bestEvalCp = rows[0]?.evalCp ?? 0;
+  const final = rows.map((r) => {
+    const deltaCp = Math.max(0, bestEvalCp - r.evalCp);
+    return { ...r, deltaCp, category: classify(deltaCp) };
+  });
+
+  res.write(`data: ${JSON.stringify({ type: 'final', result: { fen, moves: final, bestEvalCp, legalMoveCount: final.length } })}\n\n`);
+  return res.end();
+}
+
+function normalizeGameReview(body) {
+  const fenSequence = body.fenSequence;
+  const preMoveSequence = body.preMoveSequence || [];
+  if (!Array.isArray(fenSequence) || fenSequence.length === 0 || fenSequence.length > 500) {
+    throw new HttpError(400, 'fenSequence must contain between 1 and 500 FEN positions.');
+  }
+  if (!Array.isArray(preMoveSequence) || preMoveSequence.length > fenSequence.length) {
+    throw new HttpError(400, 'preMoveSequence must be an array no longer than fenSequence.');
+  }
+
+  const normalizedFens = fenSequence.map(validateFen);
+  const normalizedPreFens = preMoveSequence.map((fen) => fen == null ? null : validateFen(fen));
+  const pgn = body.pgn ?? '';
+  if (typeof pgn !== 'string') throw new HttpError(400, 'pgn must be a string.');
+  const moves = (Array.isArray(body.moves) && body.moves.length === normalizedFens.length)
+    ? body.moves
+    : parsePgnMoves(pgn);
+  const depth = requireInteger(body.settings?.depth, { name: 'depth', defaultValue: 10, min: 1, max: 20 });
+
+  return { normalizedFens, normalizedPreFens, moves, depth };
+}
+
+async function analyzeGameRequest(req, res, signal) {
+  if (!pool.enabled) return sendJson(res, 503, { error: 'Stockfish unavailable.' });
+  const body = await readJsonObject(req, signal);
+  const { normalizedFens, normalizedPreFens, moves, depth } = normalizeGameReview(body);
+
+  const plies = [];
+  for (let i = 0; i < normalizedFens.length; i += 1) {
+    signal.throwIfAborted();
+    const fen = normalizedFens[i];
+    const postMoveAnalysis = await pool.analyzePosition({
+      fen,
+      depth,
+      multipv: 1,
+      signal
+    });
+    const evalAfterMove = postMoveAnalysis.bestEvalCp;
+
+    let deltaCp = 0;
+    if (normalizedPreFens[i] !== undefined && normalizedPreFens[i] !== null) {
+      const preMoveAnalysis = await pool.analyzePosition({
+        fen: normalizedPreFens[i],
+        depth,
+        multipv: 1,
+        signal
+      });
+      const bestBeforeMove = preMoveAnalysis.bestEvalCp;
+      deltaCp = Math.max(0, bestBeforeMove + evalAfterMove);
+    }
+
+    plies.push({
+      ply: i + 1,
+      san: moves[i] || `ply-${i + 1}`,
+      fen,
+      evalCp: evalAfterMove,
+      deltaCp,
+      category: classify(deltaCp)
+    });
+  }
+
+  const turningPoints = plies.filter((p) => p.deltaCp >= 150);
+  const evalGraph = plies.map((p) => ({ ply: p.ply, evalCp: p.evalCp }));
+  return sendJson(res, 200, {
+    opening: detectOpening(moves),
+    plyCount: plies.length,
+    plies,
+    turningPoints,
+    evalGraph
+  });
+}
+
+async function dispatchApi(req, res, signal) {
+  // POST /api/analyze/position
+  if (req.method === 'POST' && req.url === '/api/analyze/position') {
+    return analyzePositionRequest(req, res, signal);
+  }
+
+  // POST /api/analyze/all-moves (SSE streaming)
+  if (req.method === 'POST' && req.url === '/api/analyze/all-moves') {
+    return analyzeAllMovesRequest(req, res, signal);
+  }
+
+  // POST /api/analyze/game
+  if (req.method === 'POST' && req.url === '/api/analyze/game') {
+    return analyzeGameRequest(req, res, signal);
+  }
+
+  // GET /api/opening
+  if (req.method === 'GET' && req.url.startsWith('/api/opening')) {
+    const url = new URL(req.url, 'http://localhost');
+    const moves = (url.searchParams.get('moves') || '').split(' ').filter(Boolean);
+    if (moves.length > 500) throw new HttpError(400, 'Too many moves.');
+    return sendJson(res, 200, detectOpening(moves));
+  }
+
+  // GET /api/status
+  if (req.method === 'GET' && req.url === '/api/status') {
+    return sendJson(res, 200, {
+      engine: pool.enabled ? 'stockfish' : 'unavailable',
+      workers: pool.size,
+      cacheSize: cache.cache.size,
+      uptime: process.uptime()
+    });
+  }
+
+  return sendJson(res, 404, { error: 'Not found' });
+}
+
 // ── API Handler ──
 async function handleApi(req, res) {
   const controller = new AbortController();
@@ -484,12 +636,6 @@ async function handleApi(req, res) {
     clearTimeout(deadline);
     return sendJson(res, 403, { error: 'Origin not allowed.' });
   }
-  if (origin) {
-    res.setHeader('Access-Control-Allow-Origin', origin);
-    res.setHeader('Vary', 'Origin');
-  }
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   if (req.method === 'OPTIONS') {
     clearTimeout(deadline);
     res.writeHead(204);
@@ -497,160 +643,7 @@ async function handleApi(req, res) {
   }
 
   try {
-    // POST /api/analyze/position
-    if (req.method === 'POST' && req.url === '/api/analyze/position') {
-      if (!pool.enabled) return sendJson(res, 503, { error: 'Stockfish unavailable.' });
-      const body = await parseBody(req, signal);
-      if (!body || typeof body !== 'object' || Array.isArray(body)) {
-        throw new HttpError(400, 'Request body must be a JSON object.');
-      }
-      const fen = validateFen(body.fen);
-      const result = await pool.analyzePosition({
-        fen,
-        signal,
-        depth: requireInteger(body.settings?.depth, { name: 'depth', defaultValue: 12, min: 1, max: 20 }),
-        multipv: requireInteger(body.settings?.multiPv, { name: 'multiPv', defaultValue: 3, min: 1, max: 5 })
-      });
-      return sendJson(res, 200, result);
-    }
-
-    // POST /api/analyze/all-moves (SSE streaming)
-    if (req.method === 'POST' && req.url === '/api/analyze/all-moves') {
-      const body = await parseBody(req, signal);
-      if (!pool.enabled) return sendJson(res, 503, { error: 'Stockfish unavailable.' });
-      if (!body || typeof body !== 'object' || Array.isArray(body)) {
-        throw new HttpError(400, 'Request body must be a JSON object.');
-      }
-      const fen = validateFen(body.fen);
-
-      const movetime = requireInteger(body.settings?.movetimeMs, {
-        name: 'movetimeMs',
-        defaultValue: 120,
-        min: 20,
-        max: 1000
-      });
-      const legal = await pool.legalMoves(fen, signal);
-
-      res.writeHead(200, {
-        'Content-Type': 'text/event-stream; charset=utf-8',
-        'Cache-Control': 'no-cache',
-        Connection: 'keep-alive'
-      });
-
-      let clientDisconnected = false;
-      res.on('close', () => { clientDisconnected = true; });
-
-      const rows = [];
-      for (let i = 0; i < legal.length; i += 1) {
-        if (clientDisconnected) return;
-        const move = legal[i];
-        const evalCp = await pool.evaluateMove(fen, move, movetime, signal);
-        // Negate eval since it's from opponent's perspective after the move
-        const row = { uci: move, evalCp: -evalCp };
-        rows.push(row);
-        res.write(`data: ${JSON.stringify({ type: 'partial', progress: (i + 1) / legal.length, row })}\n\n`);
-      }
-
-      rows.sort((a, b) => b.evalCp - a.evalCp);
-      const bestEvalCp = rows[0]?.evalCp ?? 0;
-      const final = rows.map((r) => {
-        const deltaCp = Math.max(0, bestEvalCp - r.evalCp);
-        return { ...r, deltaCp, category: classify(deltaCp) };
-      });
-
-      res.write(`data: ${JSON.stringify({ type: 'final', result: { fen, moves: final, bestEvalCp, legalMoveCount: final.length } })}\n\n`);
-      return res.end();
-    }
-
-    // POST /api/analyze/game
-    if (req.method === 'POST' && req.url === '/api/analyze/game') {
-      if (!pool.enabled) return sendJson(res, 503, { error: 'Stockfish unavailable.' });
-      const body = await parseBody(req, signal);
-      if (!body || typeof body !== 'object' || Array.isArray(body)) {
-        throw new HttpError(400, 'Request body must be a JSON object.');
-      }
-      const fenSequence = body.fenSequence;
-      const preMoveSequence = body.preMoveSequence || [];
-      if (!Array.isArray(fenSequence) || fenSequence.length === 0 || fenSequence.length > 500) {
-        throw new HttpError(400, 'fenSequence must contain between 1 and 500 FEN positions.');
-      }
-      if (!Array.isArray(preMoveSequence) || preMoveSequence.length > fenSequence.length) {
-        throw new HttpError(400, 'preMoveSequence must be an array no longer than fenSequence.');
-      }
-
-      const normalizedFens = fenSequence.map(validateFen);
-      const normalizedPreFens = preMoveSequence.map((fen) => fen == null ? null : validateFen(fen));
-      const pgn = body.pgn ?? '';
-      if (typeof pgn !== 'string') throw new HttpError(400, 'pgn must be a string.');
-      const moves = (Array.isArray(body.moves) && body.moves.length === normalizedFens.length)
-        ? body.moves
-        : parsePgnMoves(pgn);
-      const depth = requireInteger(body.settings?.depth, { name: 'depth', defaultValue: 10, min: 1, max: 20 });
-
-      const plies = [];
-      for (let i = 0; i < normalizedFens.length; i += 1) {
-        signal.throwIfAborted();
-        const fen = normalizedFens[i];
-        const postMoveAnalysis = await pool.analyzePosition({
-          fen,
-          depth,
-          multipv: 1,
-          signal
-        });
-        const evalAfterMove = postMoveAnalysis.bestEvalCp;
-
-        let deltaCp = 0;
-        if (normalizedPreFens[i] !== undefined && normalizedPreFens[i] !== null) {
-          const preMoveAnalysis = await pool.analyzePosition({
-            fen: normalizedPreFens[i],
-            depth,
-            multipv: 1,
-            signal
-          });
-          const bestBeforeMove = preMoveAnalysis.bestEvalCp;
-          deltaCp = Math.max(0, bestBeforeMove + evalAfterMove);
-        }
-
-        plies.push({
-          ply: i + 1,
-          san: moves[i] || `ply-${i + 1}`,
-          fen,
-          evalCp: evalAfterMove,
-          deltaCp,
-          category: classify(deltaCp)
-        });
-      }
-
-      const turningPoints = plies.filter((p) => p.deltaCp >= 150);
-      const evalGraph = plies.map((p) => ({ ply: p.ply, evalCp: p.evalCp }));
-      return sendJson(res, 200, {
-        opening: detectOpening(moves),
-        plyCount: plies.length,
-        plies,
-        turningPoints,
-        evalGraph
-      });
-    }
-
-    // GET /api/opening
-    if (req.method === 'GET' && req.url.startsWith('/api/opening')) {
-      const url = new URL(req.url, 'http://localhost');
-      const moves = (url.searchParams.get('moves') || '').split(' ').filter(Boolean);
-      if (moves.length > 500) throw new HttpError(400, 'Too many moves.');
-      return sendJson(res, 200, detectOpening(moves));
-    }
-
-    // GET /api/status
-    if (req.method === 'GET' && req.url === '/api/status') {
-      return sendJson(res, 200, {
-        engine: pool.enabled ? 'stockfish' : 'unavailable',
-        workers: pool.size,
-        cacheSize: cache.cache.size,
-        uptime: process.uptime()
-      });
-    }
-
-    return sendJson(res, 404, { error: 'Not found' });
+    return await dispatchApi(req, res, signal);
   } catch (error) {
     if (res.destroyed) return;
     if (res.headersSent) {

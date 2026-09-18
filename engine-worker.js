@@ -16,7 +16,7 @@ export class EngineWorker {
     this.session = session;
     const fail = (error) => {
       session.error = error;
-      for (const wake of [...session.waiters]) wake();
+      for (const wake of session.waiters) wake();
     };
     proc.on('error', fail);
     proc.on('exit', () => fail(new Error('Engine process exited')));
@@ -27,7 +27,7 @@ export class EngineWorker {
       const lines = session.buffer.split(/\r?\n/);
       session.buffer = lines.pop();
       session.lines.push(...lines.map((line) => line.trim()).filter(Boolean));
-      for (const wake of [...session.waiters]) wake();
+      for (const wake of session.waiters) wake();
     });
     this.send('uci');
     this.send('isready');
@@ -61,7 +61,7 @@ export class EngineWorker {
     const session = this.session;
     if (!session) return;
     session.error = error;
-    for (const wake of [...session.waiters]) wake();
+    for (const wake of session.waiters) wake();
     session.proc.kill('SIGKILL');
     this.session = null;
   }

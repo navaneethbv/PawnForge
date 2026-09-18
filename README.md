@@ -230,6 +230,7 @@ An LRU cache holds up to 500 results for one hour.
 
 The server listens only on `127.0.0.1` and accepts local Host headers.
 Browser API requests are restricted to the local app origins and Chrome extension origins.
+The API does not grant cross-origin website access with CORS headers; the extension uses its host permission.
 Requests without Origin remain available to local command-line clients.
 This is a local application, not an authenticated public hosting service.
 Cross-site bookmarklet injection cannot call the API; use the Chrome extension instead.

@@ -70,6 +70,12 @@ test('real engine returns legal moves and completes explorer streaming', async (
   expect((await response.json()).topMoves[0].uci).toMatch(/^[a-h][1-8][a-h][1-8]/);
   const stream = await request.post('/api/analyze/all-moves', { data: { fen: start, settings: { movetimeMs: 20 } } });
   expect(await stream.text()).toContain('"legalMoveCount":20');
+  const review = await request.post('/api/analyze/game', { data: { fenSequence: [afterE4], preMoveSequence: [start], moves: ['e4'], settings: { depth: 4 } } });
+  expect(review.ok()).toBeTruthy();
+  expect((await review.json()).plies[0]).toMatchObject({ san: 'e4', fen: afterE4 });
+  const invalid = await request.post('/api/analyze/position', { data: { fen: start.replace(' w ', ' x ') } });
+  expect(invalid.status()).toBe(400);
+
 });
 
 test('DOM overlay requires opting into approximate analysis', async ({ page }) => {

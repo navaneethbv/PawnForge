@@ -2,7 +2,7 @@ import { EngineWorker } from './engine-worker.js';
 import http from 'node:http';
 import os from 'node:os';
 import { createReadStream, existsSync } from 'node:fs';
-import { extname, resolve, sep } from 'node:path';
+import { extname, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -659,6 +659,13 @@ async function handleApi(req, res) {
   }
 }
 
+const publicFiles = new Map([
+  ['/index.html', join(ROOT, 'index.html')],
+  ['/overlay.js', join(ROOT, 'overlay.js')],
+  ['/src/main.js', join(ROOT, 'src', 'main.js')],
+  ['/src/styles.css', join(ROOT, 'src', 'styles.css')]
+]);
+
 // ── Static File Server ──
 function serveStatic(req, res) {
   const pathname = req.url.split('?')[0];
@@ -679,22 +686,10 @@ function serveStatic(req, res) {
     return;
   }
 
-  const normalized = decoded.replace(/^\/+/, '');
-  const segments = normalized.split('/');
-  const isPublicFile = normalized === 'index.html'
-    || normalized === 'overlay.js'
-    || normalized.startsWith('src/');
-  if (!isPublicFile || segments.some((segment) => !segment || segment === '.' || segment === '..' || segment.startsWith('.'))) {
+  const filePath = publicFiles.get(decoded);
+  if (!filePath) {
     res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
     res.end('Not found');
-    return;
-  }
-  const filePath = resolve(ROOT, normalized);
-
-  const rootWithSep = ROOT.endsWith(sep) ? ROOT : ROOT + sep;
-  if (filePath !== ROOT && !filePath.startsWith(rootWithSep)) {
-    res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
-    res.end('Forbidden');
     return;
   }
 
@@ -707,7 +702,7 @@ function serveStatic(req, res) {
   });
 
   stream.on('error', (err) => {
-    console.error(`Error serving ${reqPath.replace(/[\r\n]/g, '')}:`, err.message);
+    console.error('Error serving %s: %s', reqPath.replace(/[\r\n]/g, ''), err.message);
     if (!res.headersSent) {
       res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
     }

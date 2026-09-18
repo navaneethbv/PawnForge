@@ -71,7 +71,7 @@ Node.js HTTP Server (server.js)
 
 | Requirement | Version | Notes |
 |-------------|---------|-------|
-| Node.js     | 22+     | Runtime uses built-in modules; `npm ci` installs test tools |
+| Node.js     | 22.13+ or 24+     | Runtime uses built-in modules; `npm ci` installs test tools |
 | C++ compiler | g++ or clang++ | Required to build Stockfish from source |
 | make        | any     | Build tool for Stockfish |
 
@@ -241,6 +241,8 @@ Cross-site bookmarklet injection cannot call the API; use the Chrome extension i
 npm ci
 npx playwright install chromium
 npm run check
+npm run lint
+npm run check:extension
 npm test
 npm run test:browser
 npm audit --audit-level=high
@@ -252,7 +254,10 @@ They serve pinned test copies of the frontend libraries so the tests do not depe
 The application still loads those libraries from CDNs.
 Worker tests use a controlled UCI process to exercise crashes, continuous-output timeouts, cancellation, and overload.
 Browser tests cover FEN loading, illegal drags, history, stale sparring/review responses, custom-position summaries, API access restrictions, and real-engine analysis/explorer results.
-GitHub Actions runs JavaScript checks, tests, a dependency audit, and the macOS build.
+GitHub Actions runs JavaScript lint and syntax checks, Manifest V3 asset validation, workflow validation, Node 22/24 tests, real-engine browser and extension tests, dependency auditing/review, and a Swift build with warnings treated as errors.
+The required `PR checks` job fails when any applicable CI job fails, is cancelled, or is skipped.
+GitHub CodeQL default setup separately analyzes the supported JavaScript, Swift, Actions, and bundled C++ code.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the enforced branch policy and check details.
 Native menu interaction and third-party chess-site compatibility remain manual checks.
 
 ## Position and review behavior

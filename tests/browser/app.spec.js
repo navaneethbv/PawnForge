@@ -3,9 +3,9 @@ import { readFile } from 'node:fs/promises';
 const start = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
 const afterE4 = 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1';
 async function load(page) {
-  await page.route('https://cdn.jsdelivr.net/npm/chess.js@1.1.0/+esm', r => r.fulfill({ path: 'node_modules/chess.js/dist/esm/chess.js', contentType: 'text/javascript' }));
-  await page.route('https://code.jquery.com/**', r => r.fulfill({ path: 'node_modules/jquery/dist/jquery.min.js', contentType: 'text/javascript' }));
-  await page.route('https://unpkg.com/**', r => r.fulfill({ path: r.request().url().endsWith('.css') ? 'node_modules/@chrisoakman/chessboardjs/dist/chessboard-1.0.0.min.css' : 'node_modules/@chrisoakman/chessboardjs/dist/chessboard-1.0.0.min.js', contentType: r.request().url().endsWith('.css') ? 'text/css' : 'text/javascript' }));
+  await page.route('https://cdn.jsdelivr.net/npm/chess.js@1.1.0/+esm', r => r.fulfill({ headers: { 'access-control-allow-origin': '*' }, path: 'node_modules/chess.js/dist/esm/chess.js', contentType: 'text/javascript' }));
+  await page.route('https://code.jquery.com/**', r => r.fulfill({ headers: { 'access-control-allow-origin': '*' }, path: 'node_modules/jquery/dist/jquery.min.js', contentType: 'text/javascript' }));
+  await page.route('https://unpkg.com/**', r => r.fulfill({ headers: { 'access-control-allow-origin': '*' }, path: r.request().url().endsWith('.css') ? 'node_modules/@chrisoakman/chessboardjs/dist/chessboard-1.0.0.min.css' : 'node_modules/@chrisoakman/chessboardjs/dist/chessboard-1.0.0.min.js', contentType: r.request().url().endsWith('.css') ? 'text/css' : 'text/javascript' }));
   await page.goto('/');
   await expect(page.locator('#board img')).toHaveCount(32);
 }
@@ -59,6 +59,10 @@ test('turning sparring off discards a delayed engine move', async ({ page }) => 
 
 test('query parameters work and foreign origins/hosts are rejected', async ({ request }) => {
   expect((await request.get('/?embed=1&coach=1')).status()).toBe(200);
+  for (const path of ['/server.js', '/package.json', '/src/../server.js', '/src/%2F..%2Fserver.js', '/src/unknown.js']) {
+    expect((await request.get(path)).status()).toBe(404);
+  }
+
   expect((await request.get('/api/status', { headers: { Origin: 'https://example.org' } })).status()).toBe(403);
   expect((await request.get('/api/status', { headers: { Host: 'example.org:4189' } })).status()).toBe(403);
   expect((await request.get('/api/status')).headers()['access-control-allow-origin']).toBeUndefined();

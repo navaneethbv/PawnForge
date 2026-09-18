@@ -1464,15 +1464,17 @@ function navigateWithKeyboard(event) {
 
 function handleKeyboardShortcut(event) {
   if (['TEXTAREA', 'INPUT', 'SELECT'].includes(event.target.tagName) || event.target.isContentEditable) return;
-  const actions = {
-    h: () => { el.coachToggle.checked = !el.coachToggle.checked; el.coachToggle.dispatchEvent(new Event('change')); },
-    f: () => document.getElementById('flipBtn').click(),
-    z: () => document.getElementById('undoBtn').click()
-  };
   const key = event.key.toLowerCase();
-  if (key in actions && !(key === 'z' && event.shiftKey)) {
+  if (key === 'h') {
     event.preventDefault();
-    actions[key]();
+    el.coachToggle.checked = !el.coachToggle.checked;
+    el.coachToggle.dispatchEvent(new Event('change'));
+  } else if (key === 'f') {
+    event.preventDefault();
+    document.getElementById('flipBtn').click();
+  } else if (key === 'z' && !event.shiftKey) {
+    event.preventDefault();
+    document.getElementById('undoBtn').click();
   } else if (event.code === 'Space' && event.target.tagName !== 'BUTTON') {
     event.preventDefault();
     applyCoachMove();

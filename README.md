@@ -71,7 +71,7 @@ Node.js HTTP Server (server.js)
 
 | Requirement | Version | Notes |
 |-------------|---------|-------|
-| Node.js     | 18+     | Only built-in modules are used (no `npm install` needed) |
+| Node.js     | 22+     | Runtime uses built-in modules; `npm ci` installs test tools |
 | C++ compiler | g++ or clang++ | Required to build Stockfish from source |
 | make        | any     | Build tool for Stockfish |
 
@@ -189,9 +189,13 @@ curl "http://localhost:4173/api/opening?moves=e4+e5+Nf3+Nc6+Bb5"
 
 The repository root also contains a Manifest V3 Chrome extension.
 Start PawnForge with `npm start`, open `chrome://extensions`, enable Developer mode, and load this repository directory as an unpacked extension.
-The Coach overlay runs on HTTP and HTTPS chess sites, reads a page FEN or visible DOM pieces, calls the local Stockfish API, and highlights the recommended origin and destination squares in red.
+The Coach overlay runs on HTTP and HTTPS chess sites and prefers a complete page FEN.
+It calls the local Stockfish API through the extension background worker and highlights the recommended origin and destination squares in red.
+DOM-only reconstruction requires opting into approximate analysis because visible pieces do not reveal castling rights, en passant, or draw counters.
 Auto detect uses the site's turn metadata when available and falls back to the bottom move-list row, so a completed white and black pair means White moves next while a row containing only White's move means Black moves next.
-Use the Side selector or paste a full FEN when a site does not expose whose turn it is or renders its board only to a canvas.
+Paste a complete six-field FEN for accurate analysis when the page does not expose one.
+The Side selector is available for approximate DOM analysis.
+Canvas-only boards need a page FEN or manual FEN.
 The API field supports a different local server port.
 
 See [extension/README.md](extension/README.md) for setup and detection details.
@@ -209,13 +213,56 @@ Run it from the repository with `swift run --package-path macos -- --repo /Users
 | Problem | Solution |
 |---------|----------|
 | `Stockfish is not available` | Build the engine (`cd engine/Stockfish/src && make build ARCH=x86-64`) or install it system-wide |
-| `Engine timeout` errors | Increase the analysis depth/time settings, or check that the Stockfish binary runs correctly (`echo "quit" \| stockfish`) |
+| `Engine timeout` errors | Reduce analysis depth, retry after queued work completes, or check that the Stockfish binary runs correctly (`echo "quit" \| stockfish`) |
 | Port already in use | Set a different port: `PORT=3000 npm start` |
 | Board doesn't render | Ensure you have internet access (chessboard.js and chess.js load from CDN) |
 
 ## Engine Configuration
 
-The engine pool spawns up to 4 Stockfish UCI worker processes (capped at the number of CPU cores). Each worker maintains a job queue for sequential command execution. An LRU cache (500 entries, 1-hour TTL) avoids recomputing previously analyzed positions.
+The engine pool starts up to four Stockfish UCI workers on demand, capped at the CPU count.
+Each worker allows at most eight outstanding jobs and has a 15-second deadline measured from enqueue time.
+Overload returns HTTP 429; expired queued jobs return HTTP 503.
+Crashed, timed-out, and cancelled workers are terminated and replaced on the next job.
+Disconnected clients cancel their queued or active work, and each API request has a two-minute deadline.
+Streaming failures are sent as SSE error events.
+Shutdown terminates the engine children.
+An LRU cache holds up to 500 results for one hour.
+
+The server listens only on `127.0.0.1` and accepts local Host headers.
+Browser API requests are restricted to the local app origins and Chrome extension origins.
+The API does not grant cross-origin website access with CORS headers; the extension uses its host permission.
+Requests without Origin remain available to local command-line clients.
+This is a local application, not an authenticated public hosting service.
+Cross-site bookmarklet injection cannot call the API; use the Chrome extension instead.
+
+## Automated verification
+
+```bash
+npm ci
+npx playwright install chromium
+npm run check
+npm test
+npm run test:browser
+npm audit --audit-level=high
+swift build --package-path macos # macOS only
+```
+
+Browser tests require an installed or built Stockfish binary and reserve port 4189.
+They serve pinned test copies of the frontend libraries so the tests do not depend on CDN availability.
+The application still loads those libraries from CDNs.
+Worker tests use a controlled UCI process to exercise crashes, continuous-output timeouts, cancellation, and overload.
+Browser tests cover FEN loading, illegal drags, history, stale sparring/review responses, custom-position summaries, API access restrictions, and real-engine analysis/explorer results.
+GitHub Actions runs JavaScript checks, tests, a dependency audit, and the macOS build.
+Native menu interaction and third-party chess-site compatibility remain manual checks.
+
+## Position and review behavior
+
+Loading a FEN updates the board only after validation succeeds.
+History navigation replays moves to retain opening and repetition history in the frontend.
+FEN-only engine analysis cannot recover repetition history from earlier positions.
+Game review preserves the PGN starting position, side to move, and move numbers.
+Starting a newer review cancels the previous request and keeps its response and position sequence together.
+Resetting, loading a FEN, changing sides, or disabling sparring invalidates pending computer moves.
 
 ## Tech Stack
 

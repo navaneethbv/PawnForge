@@ -219,6 +219,7 @@
     </div>
     <div id="pawnforge-hud-body">
       <div id="pawnforge-hud-msg" role="status" aria-live="polite">Looking for a chess position...</div>
+      <label><input id="pawnforge-approximate" type="checkbox" /> Analyze approximate DOM position (special move rights unknown)</label>
       <div id="pawnforge-hud-candidates" class="pawnforge-candidate-list"></div>
       <div class="pawnforge-control-row">
         <label for="pawnforge-side">Side</label>
@@ -278,7 +279,7 @@
   function isFenLike(value) {
     if (typeof value !== 'string') return false;
     const fields = value.trim().split(/\s+/);
-    if (fields.length < 2 || fields.length > 6 || !/^[wb]$/.test(fields[1])) return false;
+    if (fields.length !== 6 || !/^[wb]$/.test(fields[1])) return false;
     const rows = fields[0].split('/');
     if (rows.length !== 8) return false;
     return rows.every((row) => {
@@ -295,7 +296,6 @@
   function normaliseFen(value) {
     if (!isFenLike(value)) return null;
     const fields = value.trim().split(/\s+/);
-    while (fields.length < 6) fields.push(fields.length === 2 ? '-' : fields.length === 3 ? '-' : fields.length === 4 ? '0' : '1');
     return fields.join(' ');
   }
 
@@ -473,7 +473,7 @@
     }
     const side = sideFromDom(board) || sideFromMoveList();
     if (!side) return { board, sideUnknown: true };
-    return { fen: `${rows.join('/')} ${side} - - 0 1`, board, source: 'visible board' };
+    return { fen: `${rows.join('/')} ${side} - - 0 1`, board, source: 'approximate visible board', approximate: true };
   }
 
   function readSameWorldFen() {
@@ -626,6 +626,10 @@
 
   async function analyzePosition(force = false) {
     if (!active) return;
+    if (analysisInFlight) {
+      if (force) { analysisRequest += 1; analysisController?.abort(); lastPositionKey = ''; }
+      return;
+    }
     const requestId = ++analysisRequest;
     const snapshot = await detectCurrentPosition();
     if (!active || requestId !== analysisRequest) return;
@@ -653,6 +657,13 @@
       return;
     }
 
+    if (snapshot.approximate && !hud.querySelector('#pawnforge-approximate').checked) {
+      lastPositionKey = '';
+      clearAnalysisUi();
+      setMessage('Board found. Paste a full FEN for accurate analysis.');
+      setHint('DOM pieces do not reveal castling, en passant, or draw counters. Approximate analysis requires opting in.');
+      return;
+    }
     const now = Date.now();
     if (!force) {
       if (snapshot.fen !== observedPositionKey) {
@@ -683,17 +694,20 @@
     analysisController = new AbortController();
 
     try {
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fen: snapshot.fen, settings: { depth: 8, multiPv: 3 } }),
-        signal: analysisController.signal
-      });
-      if (!response.ok) {
-        const body = await response.json().catch(() => ({}));
-        throw new Error(body.error || `Engine returned HTTP ${response.status}`);
+      const payload = { fen: snapshot.fen, settings: { depth: 8, multiPv: 3 } };
+      let data;
+      if (isExtension) {
+        const result = await extensionRuntime.sendMessage({ type: 'analyze-position', endpoint, payload });
+        if (result?.error) throw new Error(result.error);
+        data = result.data;
+      } else {
+        const response = await fetch(endpoint, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload), signal: analysisController.signal
+        });
+        data = await response.json();
+        if (!response.ok) throw new Error(data.error || `Engine returned HTTP ${response.status}`);
       }
-      const data = await response.json();
       if (!active || requestId !== analysisRequest || snapshot.fen !== lastPositionKey) return;
       const latestSnapshot = await detectCurrentPosition();
       if (!active || requestId !== analysisRequest) return;
@@ -711,9 +725,10 @@
         return;
       }
       renderCandidates(data.topMoves);
-      setHint(`Source: ${snapshot.source || 'position'}. Select a line to move the highlights.`);
+      setHint(snapshot.approximate ? 'Approximate: castling and en passant disabled; draw counters unknown. Paste a full FEN for accurate results.' : `Source: ${snapshot.source || 'position'}. Select a line to move the highlights.`);
     } catch (error) {
       if (error?.name === 'AbortError' || requestId !== analysisRequest) return;
+      lastPositionKey = '';
       clearAnalysisUi();
       setMessage('Engine unavailable. Start PawnForge and check the endpoint.');
       setHint(error?.message || endpoint);
@@ -726,7 +741,10 @@
     if (!extensionStorage) return;
     try {
       const stored = await extensionStorage.get(['endpoint', 'sideMode']);
-      if (typeof stored.endpoint === 'string' && /^https?:\/\//.test(stored.endpoint)) endpoint = stored.endpoint;
+      if (typeof stored.endpoint === 'string') {
+        const url = new URL(stored.endpoint);
+        if (url.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(url.hostname) && !url.username && !url.password && url.pathname === '/api/analyze/position') endpoint = url.toString();
+      }
       if (stored.sideMode === 'w' || stored.sideMode === 'b' || stored.sideMode === 'auto') sideMode = stored.sideMode;
       sideEl.value = sideMode;
       endpointEl.value = endpoint;
@@ -746,7 +764,6 @@
     if (!active) {
       analysisRequest += 1;
       if (analysisController) analysisController.abort();
-      analysisInFlight = false;
       clearAnalysisUi();
       setMessage('Coach assistance is off.');
       setHint('Turn Coach on to resume position detection.');
@@ -757,6 +774,7 @@
     analyzePosition(true);
   }
 
+  hud.querySelector('#pawnforge-approximate').addEventListener('change', () => { lastPositionKey = ''; analyzePosition(true); });
   switchEl.addEventListener('change', () => setActive(switchEl.checked));
   sideEl.addEventListener('change', () => {
     sideMode = sideEl.value;
@@ -777,7 +795,7 @@
   saveEndpointEl.addEventListener('click', () => {
     try {
       const value = new URL(endpointEl.value.trim());
-      if (!['http:', 'https:'].includes(value.protocol)) throw new Error('HTTP or HTTPS is required.');
+      if (value.protocol !== 'http:' || !['localhost', '127.0.0.1'].includes(value.hostname) || value.username || value.password || value.pathname !== '/api/analyze/position') throw new Error('Use http://127.0.0.1:PORT/api/analyze/position.');
       endpoint = value.toString();
       endpointEl.value = endpoint;
       persistSettings();

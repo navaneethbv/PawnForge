@@ -6,6 +6,15 @@
   "description": "PawnForge full-stack chess analysis web app",
   "scripts": {
     "serve": "node server.js",
-    "start": "node server.js"
+    "start": "node server.js",
+    "check": "node --check server.js && node --check engine-worker.js && node --check src/main.js && node --check overlay.js && node --check background.js",
+    "test": "node --test tests/*.test.js",
+    "test:browser": "playwright test"
+  },
+  "devDependencies": {
+    "@chrisoakman/chessboardjs": "1.0.0",
+    "@playwright/test": "1.63.0",
+    "chess.js": "1.1.0",
+    "jquery": "3.7.1"
   }
 }

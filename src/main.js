@@ -1,7 +1,7 @@
 import { Chess } from 'https://cdn.jsdelivr.net/npm/chess.js@1.1.0/+esm';
 
 // ── State ──
-const game = new Chess();
+let game = new Chess();
 let board;
 let allMovesResult = [];
 let allMovesResultFen = null;
@@ -9,6 +9,9 @@ let gameReviewData = null;
 let gameReviewPly = -1;
 let gameReviewFens = [];
 let gameReviewPreFens = [];
+let gameReviewRequestId = 0;
+let gameReviewController = null;
+let gameReviewHistory = [];
 
 // ── Piece symbol map (for display) ──
 const PIECE_SYMBOLS = { p: '', n: 'N', b: 'B', r: 'R', q: 'Q', k: 'K' };
@@ -164,11 +167,12 @@ function jumpToHistoryPly(ply) {
   for (let i = 0; i <= ply; i++) {
     replay.move(playedMoves[i]);
   }
-  game.load(replay.fen());
+  game = replay;
   board.position(replay.fen());
   el.fenInput.value = replay.fen();
   clearPositionAnalysis();
 
+  clearExplorerUI();
   updateActiveMoveHighlight();
   clearBoardBadges();
   clearSquareHighlights();
@@ -227,6 +231,13 @@ function updateEvalBar(evalCp) {
 }
 
 function clearPositionAnalysis() {
+  coachReqId += 1;
+  currentCoachMove = null;
+  coachCandidates = [];
+  el.coachCandidates.innerHTML = '';
+  el.applyCoachMoveBtn.style.display = 'none';
+  clearMoveArrow();
+  invalidateSparring();
   positionAnalysisRequestId += 1;
   el.topMovesContainer.innerHTML = '<div class="placeholder-text">Position changed. Analyze again for current engine lines.</div>';
   el.pvLines.innerHTML = '';
@@ -372,7 +383,25 @@ let coachCandidates = [];
 let activeCandidateIdx = 0;
 let coachReqId = 0;
 
+function showCoachGameOver() {
+  clearMoveArrow();
+  currentCoachMove = null;
+  coachCandidates = [];
+  if (el.coachCard) {
+    el.coachCard.style.display = 'block';
+    el.coachStatusText.textContent = 'Game Over';
+    let outcome = 'Draw / Stalemate';
+    if (game.isCheckmate()) {
+      outcome = `Checkmate! ${game.turn() === 'w' ? 'Black' : 'White'} wins!`;
+    }
+    el.coachMoveDetail.textContent = outcome;
+    el.applyCoachMoveBtn.style.display = 'none';
+    if (el.coachCandidates) el.coachCandidates.innerHTML = '';
+  }
+}
+
 async function updateCoachHint() {
+  const thisReq = ++coachReqId;
   if (!coachEnabled) {
     clearMoveArrow();
     if (el.coachCard) el.coachCard.style.display = 'none';
@@ -380,24 +409,10 @@ async function updateCoachHint() {
   }
 
   if (game.isGameOver()) {
-    clearMoveArrow();
-    currentCoachMove = null;
-    coachCandidates = [];
-    if (el.coachCard) {
-      el.coachCard.style.display = 'block';
-      el.coachStatusText.textContent = 'Game Over';
-      let outcome = 'Draw / Stalemate';
-      if (game.isCheckmate()) {
-        outcome = `Checkmate! ${game.turn() === 'w' ? 'Black' : 'White'} wins!`;
-      }
-      el.coachMoveDetail.textContent = outcome;
-      el.applyCoachMoveBtn.style.display = 'none';
-      if (el.coachCandidates) el.coachCandidates.innerHTML = '';
-    }
+    showCoachGameOver();
     return;
   }
 
-  const thisReq = ++coachReqId;
   currentCoachMove = null;
   clearMoveArrow();
   if (el.coachCard) {
@@ -414,7 +429,7 @@ async function updateCoachHint() {
       settings: { depth: 10, multiPv: 3 }
     });
 
-    if (thisReq !== coachReqId) return;
+    if (thisReq !== coachReqId || !coachEnabled || fen !== game.fen()) return;
 
     if (!data.topMoves || data.topMoves.length === 0) {
       el.coachStatusText.textContent = 'Coach: No legal moves';
@@ -504,7 +519,7 @@ function renderCoachCandidate(idx) {
 }
 
 function applyCoachMove() {
-  if (!currentCoachMove) return;
+  if (!coachEnabled || !currentCoachMove) return;
   const move = game.move({
     from: currentCoachMove.from,
     to: currentCoachMove.to,
@@ -517,7 +532,7 @@ function applyCoachMove() {
   clearPositionAnalysis();
   clearExplorerUI();
   clearBoardBadges();
-  highlightLastMove(currentCoachMove.from, currentCoachMove.to, 'best');
+  highlightLastMove(move.from, move.to, 'best');
 
   const sound = game.inCheck() ? 'check' : (move.captured ? 'capture' : 'move');
   playChessSound(sound);
@@ -530,43 +545,62 @@ function applyCoachMove() {
 let sparringActive = false;
 let sparringPlayerColor = 'w';
 let isEngineThinking = false;
+let sparringRequestId = 0;
+let sparringController = null;
+function invalidateSparring() {
+  sparringRequestId += 1;
+  sparringController?.abort();
+  sparringController = null;
+  isEngineThinking = false;
+}
+
+function applySparringResult(res, fen) {
+  if (!res.topMoves?.length) return;
+  const uci = res.topMoves[0].uci;
+  const from = uci.substring(0, 2);
+  const to = uci.substring(2, 4);
+  const promo = uci[4];
+  const moveObj = game.move({ from, to, promotion: promo || 'q' });
+  if (moveObj) {
+    recordPlayedMove(moveObj);
+    board.position(game.fen());
+    renderMoves();
+    clearPositionAnalysis();
+    clearExplorerUI();
+    highlightLastMove(from, to, 'good');
+    const sound = game.inCheck() ? 'check' : (moveObj.captured ? 'capture' : 'move');
+    playChessSound(sound);
+    updateEvalBar(toWhiteRelativeEval(res.bestEvalCp, fen));
+    updateCoachHint();
+  }
+}
 
 async function checkSparringTurn() {
   if (!sparringActive || isEngineThinking || game.isGameOver()) return;
   const currentTurn = game.turn();
   if (currentTurn !== sparringPlayerColor) {
+    const requestId = ++sparringRequestId;
+    const fen = game.fen();
+    const playerColor = sparringPlayerColor;
+    sparringController = new AbortController();
     isEngineThinking = true;
     setEngineStatus('Computer thinking...', 'active');
     try {
       const depth = Number(el.sparringLevel ? el.sparringLevel.value : 12);
       const res = await postJson('/api/analyze/position', {
-        fen: game.fen(),
+        fen,
         settings: { depth, multiPv: 1 }
-      });
-      if (res.topMoves && res.topMoves.length > 0) {
-        const uci = res.topMoves[0].uci;
-        const from = uci.substring(0, 2);
-        const to = uci.substring(2, 4);
-        const promo = uci[4];
-        const moveObj = game.move({ from, to, promotion: promo || 'q' });
-        if (moveObj) {
-          recordPlayedMove(moveObj);
-          board.position(game.fen());
-          renderMoves();
-          clearPositionAnalysis();
-          clearExplorerUI();
-          highlightLastMove(from, to, 'good');
-          const sound = game.inCheck() ? 'check' : (moveObj.captured ? 'capture' : 'move');
-          playChessSound(sound);
-          updateEvalBar(toWhiteRelativeEval(res.bestEvalCp, game.fen()));
-        }
-      }
-    } catch (_e) {
-      setEngineStatus('Engine error', 'error');
+      }, sparringController.signal);
+      if (requestId !== sparringRequestId || !sparringActive || playerColor !== sparringPlayerColor || game.fen() !== fen) return;
+      applySparringResult(res, fen);
+    } catch (error) {
+      if (requestId === sparringRequestId && error.name !== 'AbortError') setEngineStatus('Engine error', 'error');
     } finally {
-      isEngineThinking = false;
-      setEngineStatus('Engine idle', 'idle');
-      updateCoachHint();
+      if (requestId === sparringRequestId) {
+        isEngineThinking = false;
+        sparringController = null;
+        updateCoachHint();
+      }
     }
   }
 }
@@ -588,34 +622,29 @@ function initTabs() {
 function renderMoves() {
   el.moveList.innerHTML = '';
 
-  for (let i = 0; i < playedMoves.length; i += 2) {
-    const moveNum = Math.floor(i / 2) + 1;
-    const pair = document.createElement('div');
-    pair.className = 'move-pair';
-
-    const num = document.createElement('span');
-    num.className = 'move-number';
-    num.textContent = `${moveNum}.`;
-    pair.appendChild(num);
-
-    const white = document.createElement('span');
-    white.className = 'move-san' + (currentMoveIndex === i ? ' active' : '');
-    white.textContent = playedMoves[i].san;
-    white.dataset.ply = i;
-    white.addEventListener('click', () => jumpToHistoryPly(i));
-    pair.appendChild(white);
-
-    if (playedMoves[i + 1]) {
-      const black = document.createElement('span');
-      black.className = 'move-san' + (currentMoveIndex === i + 1 ? ' active' : '');
-      black.textContent = playedMoves[i + 1].san;
-      black.dataset.ply = i + 1;
-      black.addEventListener('click', () => jumpToHistoryPly(i + 1));
-      pair.appendChild(black);
+  const fields = initialFen.split(' ');
+  const offset = fields[1] === 'b' ? 1 : 0;
+  const firstNumber = Number(fields[5]);
+  let pair;
+  playedMoves.forEach((move, i) => {
+    const black = (i + offset) % 2 === 1;
+    if (!black || i === 0) {
+      pair = document.createElement('div');
+      pair.className = 'move-pair';
+      const num = document.createElement('span');
+      num.className = 'move-number';
+      num.textContent = `${firstNumber + Math.floor((i + offset) / 2)}${black ? '...' : '.'}`;
+      pair.appendChild(num);
+      el.moveList.appendChild(pair);
     }
-
-    el.moveList.appendChild(pair);
-  }
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'move-san' + (currentMoveIndex === i ? ' active' : '');
+    button.textContent = move.san;
+    button.dataset.ply = i;
+    button.addEventListener('click', () => jumpToHistoryPly(i));
+    pair.appendChild(button);
+  });
 
   el.fenInput.value = game.fen();
 }
@@ -625,7 +654,9 @@ function onDrop(source, target) {
   if (sparringActive && isEngineThinking) return 'snapback';
   if (sparringActive && game.turn() !== sparringPlayerColor) return 'snapback';
 
-  const move = game.move({ from: source, to: target, promotion: 'q' });
+  let move;
+  try { move = game.move({ from: source, to: target, promotion: 'q' }); }
+  catch { return 'snapback'; }
   if (!move) return 'snapback';
 
   recordPlayedMove(move);
@@ -648,11 +679,12 @@ function onSnapEnd() {
 }
 
 // ── API helpers ──
-async function postJson(url, body) {
+async function postJson(url, body, signal) {
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
+    body: JSON.stringify(body),
+    signal
   });
   const json = await res.json();
   if (!res.ok) throw new Error(json.error || 'Request failed');
@@ -750,7 +782,8 @@ async function analyzePosition() {
 
     setEngineStatus(`Analysis complete (depth ${depth})`, 'idle');
   } catch (error) {
-    el.topMovesContainer.innerHTML = `<div class="placeholder-text">Error: ${error.message}</div>`;
+    if (requestId !== positionAnalysisRequestId || game.fen() !== analysisFen) return;
+    el.topMovesContainer.textContent = `Error: ${error.message}`;
     setEngineStatus('Analysis failed', 'error');
   }
 }
@@ -915,11 +948,11 @@ function clearExplorerUI() {
 
 // ── All-moves explorer with streaming ──
 function runAllMoves() {
+  clearExplorerUI();
   setEngineStatus('Evaluating all legal moves...', 'active');
   el.explorerProgress.style.display = 'flex';
   el.explorerProgressFill.style.width = '0%';
   el.explorerProgressText.textContent = 'Starting...';
-  clearExplorerUI();
 
   const currentFen = game.fen();
   const requestId = explorerRequestId;
@@ -939,6 +972,7 @@ function runAllMoves() {
       return;
     }
     const data = JSON.parse(event.data);
+    if (data.type === 'error') throw new Error(data.error);
     if (data.type === 'partial') {
       partial.push(data.row);
       const pct = Math.round(data.progress * 100);
@@ -982,7 +1016,7 @@ function runAllMoves() {
   es.onerror = (error) => {
     if (requestId !== explorerRequestId) return;
     const msg = error && error.message ? error.message : 'Streaming failed';
-    el.allMovesTable.innerHTML = `<div class="placeholder-text">Error: ${msg}</div>`;
+    el.allMovesTable.textContent = `Error: ${msg}`;
     el.explorerProgress.style.display = 'none';
     setEngineStatus('Explorer failed', 'error');
     es.close();
@@ -1112,13 +1146,16 @@ function drawEvalGraph(plies, activePly = -1) {
   const step = Math.max(1, Math.floor(plies.length / 10));
   for (let i = 0; i < plies.length; i += step) {
     const x = pad.left + i * xStep;
-    const moveNum = Math.floor(i / 2) + 1;
+    const moveNum = gameReviewPreFens[i]?.split(' ')[5] || Math.floor(i / 2) + 1;
     ctx.fillText(moveNum.toString(), x, h - 4);
   }
 }
 
 // ── Game analysis ──
 async function analyzeGame() {
+  const requestId = ++gameReviewRequestId;
+  gameReviewController?.abort();
+  gameReviewController = new AbortController();
   try {
     setEngineStatus('Analyzing game...', 'active');
     el.gameProgress.style.display = 'flex';
@@ -1143,8 +1180,6 @@ async function analyzeGame() {
       fenSequence.push(cursor.fen());
     });
 
-    gameReviewFens = fenSequence;
-    gameReviewPreFens = preMoveSequence;
 
     el.gameProgressText.textContent = `Analyzing ${hist.length} plies...`;
     el.gameProgressFill.style.width = '10%';
@@ -1155,13 +1190,18 @@ async function analyzeGame() {
       fenSequence,
       preMoveSequence,
       settings: { depth: Number(document.getElementById('gameDepthSelect').value) }
-    });
+    }, gameReviewController.signal);
+    if (requestId !== gameReviewRequestId) return;
+    gameReviewFens = fenSequence;
+    gameReviewPreFens = preMoveSequence;
+    gameReviewHistory = hist;
+    gameReviewPly = -1;
 
     gameReviewData = data;
     el.gameProgressFill.style.width = '100%';
     el.gameProgressText.textContent = 'Complete!';
 
-    setTimeout(() => { el.gameProgress.style.display = 'none'; }, 1000);
+    setTimeout(() => { if (requestId === gameReviewRequestId) el.gameProgress.style.display = 'none'; }, 1000);
 
     // Draw eval graph
     el.evalGraphContainer.style.display = 'block';
@@ -1178,7 +1218,8 @@ async function analyzeGame() {
 
     setEngineStatus('Game analysis complete', 'idle');
   } catch (error) {
-    el.gameMoveList.innerHTML = `<div class="placeholder-text">Error: ${error.message}</div>`;
+    if (requestId !== gameReviewRequestId || error.name === 'AbortError') return;
+    el.gameMoveList.textContent = `Error: ${error.message}`;
     el.gameProgress.style.display = 'none';
     setEngineStatus('Game analysis failed', 'error');
   }
@@ -1188,14 +1229,16 @@ function renderGameMoveList(data, hist) {
   el.gameMoveList.innerHTML = '';
 
   data.plies.forEach((p, i) => {
-    if (i % 2 === 0) {
+    const before = gameReviewPreFens[i].split(' ');
+    if (before[1] === 'w' || i === 0) {
       const numSpan = document.createElement('span');
       numSpan.className = 'game-move-number';
-      numSpan.textContent = `${Math.floor(i / 2) + 1}.`;
+      numSpan.textContent = `${before[5]}${before[1] === 'b' ? '...' : '.'}`;
       el.gameMoveList.appendChild(numSpan);
     }
 
-    const moveEl = document.createElement('span');
+    const moveEl = document.createElement('button');
+    moveEl.type = 'button';
     moveEl.className = `game-move cat-${p.category.key}`;
     moveEl.textContent = p.san;
     moveEl.dataset.ply = i;
@@ -1218,8 +1261,14 @@ function navigateToGamePly(ply) {
   const plyData = gameReviewData.plies[ply];
 
   // Update board
-  game.load(fen);
+  initialFen = gameReviewPreFens[0];
+  playedMoves = gameReviewHistory.map(({ from, to, promotion, san }) => ({ from, to, promotion, san }));
+  currentMoveIndex = ply;
+  game = new Chess(initialFen);
+  for (let i = 0; i <= ply; i++) game.move(playedMoves[i]);
   board.position(fen);
+  renderMoves();
+  clearExplorerUI();
   el.fenInput.value = fen;
   clearPositionAnalysis();
 
@@ -1256,7 +1305,7 @@ function renderGameSummary(data, hist) {
   const black = { best: 0, good: 0, inaccuracy: 0, mistake: 0, blunder: 0, totalDelta: 0, count: 0 };
 
   data.plies.forEach((p, i) => {
-    const side = i % 2 === 0 ? white : black;
+    const side = hist[i].color === 'w' ? white : black;
     side[p.category.key] = (side[p.category.key] || 0) + 1;
     side.totalDelta += p.deltaCp;
     side.count += 1;
@@ -1302,12 +1351,14 @@ function renderGameSummary(data, hist) {
 
 // ── Opening detection ──
 async function detectOpening() {
+  const fen = game.fen();
   try {
     setEngineStatus('Detecting opening...', 'active');
     const query = encodeURIComponent(game.history().join(' '));
     const res = await fetch(`/api/opening?moves=${query}`);
     if (!res.ok) throw new Error(`Failed (${res.status})`);
     const data = await res.json();
+    if (game.fen() !== fen) return;
 
     el.openingResult.innerHTML = `
       <div class="opening-name">
@@ -1317,6 +1368,7 @@ async function detectOpening() {
       <div class="opening-meta">Book window: ply ${data.bookPlyRange[0]}-${data.bookPlyRange[1]}</div>
     `;
 
+    el.openingContinuations.innerHTML = '';
     // Show continuations if available
     if (data.continuations && data.continuations.length > 0) {
       el.openingContinuations.innerHTML = '<h3 style="font-size:0.85rem;color:var(--text-muted);margin-bottom:0.4rem;">Common continuations</h3>';
@@ -1329,6 +1381,7 @@ async function detectOpening() {
           <span class="continuation-freq">${c.eco}</span>
         `;
         row.addEventListener('click', () => {
+          if (game.fen() !== fen) return;
           const m = game.move(c.move);
           if (m) {
             recordPlayedMove(m);
@@ -1348,7 +1401,7 @@ async function detectOpening() {
 
     setEngineStatus('Opening detected', 'idle');
   } catch (error) {
-    el.openingResult.innerHTML = `<div class="placeholder-text">Error: ${error.message}</div>`;
+    el.openingResult.textContent = `Error: ${error.message}`;
     setEngineStatus('Opening detection failed', 'error');
   }
 }
@@ -1362,7 +1415,7 @@ function applyExplorerFilters() {
   const filterVal = el.filterPiece.value;
 
   if (filterVal === 'captures') {
-    filtered = filtered.filter((m) => m.flags && m.flags.includes('c'));
+    filtered = filtered.filter((m) => m.flags && (m.flags.includes('c') || m.flags.includes('e')));
   } else if (filterVal === 'checks') {
     filtered = filtered.filter((m) => m.san && (m.san.includes('+') || m.san.includes('#')));
   }
@@ -1388,12 +1441,46 @@ function applyExplorerFilters() {
       if (pieceA !== pieceB) {
         return (order[pieceA] ?? 99) - (order[pieceB] ?? 99);
       }
-      return (toWhiteRelativeEval(b.evalCp || 0, fen)) - (toWhiteRelativeEval(a.evalCp || 0, fen));
+      return (b.evalCp || 0) - (a.evalCp || 0);
     });
   }
   // default 'eval' is already sorted
 
   renderMovesTable(filtered, fen);
+}
+
+function navigateWithKeyboard(event) {
+  const review = gameReviewData && document.getElementById('tab-game-review').classList.contains('active');
+  const current = review ? gameReviewPly : currentMoveIndex;
+  const first = review ? 0 : -1;
+  const last = review ? gameReviewData.plies.length - 1 : playedMoves.length - 1;
+  const targets = { ArrowLeft: current - 1, ArrowRight: current + 1, Home: first, End: last };
+  if (!(event.key in targets)) return;
+  event.preventDefault();
+  const target = Math.max(first, Math.min(last, targets[event.key]));
+  if (review) navigateToGamePly(target);
+  else jumpToHistoryPly(target);
+}
+
+function handleKeyboardShortcut(event) {
+  if (['TEXTAREA', 'INPUT', 'SELECT'].includes(event.target.tagName) || event.target.isContentEditable) return;
+  const key = event.key.toLowerCase();
+  if (key === 'h') {
+    event.preventDefault();
+    el.coachToggle.checked = !el.coachToggle.checked;
+    el.coachToggle.dispatchEvent(new Event('change'));
+  } else if (key === 'f') {
+    event.preventDefault();
+    document.getElementById('flipBtn').click();
+  } else if (key === 'z' && !event.shiftKey) {
+    event.preventDefault();
+    document.getElementById('undoBtn').click();
+  } else if (event.code === 'Space' && event.target.tagName !== 'BUTTON') {
+    event.preventDefault();
+    applyCoachMove();
+  } else {
+    navigateWithKeyboard(event);
+  }
 }
 
 // ── Bind all UI events ──
@@ -1416,6 +1503,8 @@ function bindUI() {
     initialFen = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
     playedMoves = [];
     currentMoveIndex = -1;
+    gameReviewRequestId += 1;
+    gameReviewController?.abort();
     game.reset();
     board.start();
     renderMoves();
@@ -1429,7 +1518,7 @@ function bindUI() {
 
   document.getElementById('undoBtn').addEventListener('click', () => {
     if (playedMoves.length > 0) {
-      playedMoves.pop();
+      playedMoves = playedMoves.slice(0, Math.max(0, currentMoveIndex));
       jumpToHistoryPly(playedMoves.length - 1);
       renderMoves();
     } else {
@@ -1449,7 +1538,8 @@ function bindUI() {
     if (!fen) return;
     let loaded = false;
     try {
-      loaded = game.load(fen);
+      game.load(fen);
+      loaded = true;
     } catch (_error) {
       loaded = false;
     }
@@ -1466,6 +1556,8 @@ function bindUI() {
     clearPositionAnalysis();
     clearBoardBadges();
     clearSquareHighlights();
+    gameReviewRequestId += 1;
+    gameReviewController?.abort();
     // Clear explorer UI state so no stale results remain after FEN change.
     clearExplorerUI();
     updateCoachHint();
@@ -1514,73 +1606,7 @@ function bindUI() {
   el.sortMoves.addEventListener('change', applyExplorerFilters);
 
   // Global Keyboard Shortcuts (Coach, Move Play, Undo, Flip, Navigation)
-  document.addEventListener('keydown', (e) => {
-    if (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
-
-    // Toggle Coach: 'H'
-    if (e.key === 'h' || e.key === 'H') {
-      e.preventDefault();
-      if (el.coachToggle) {
-        el.coachToggle.checked = !el.coachToggle.checked;
-        el.coachToggle.dispatchEvent(new Event('change'));
-      }
-      return;
-    }
-
-    // Play Coach Move: Space
-    if (e.code === 'Space') {
-      e.preventDefault();
-      applyCoachMove();
-      return;
-    }
-
-    // Flip Board: 'F'
-    if (e.key === 'f' || e.key === 'F') {
-      e.preventDefault();
-      const flipBtn = document.getElementById('flipBtn');
-      if (flipBtn) flipBtn.click();
-      return;
-    }
-
-    // Undo Move: 'Z'
-    if ((e.key === 'z' || e.key === 'Z') && !e.shiftKey) {
-      e.preventDefault();
-      const undoBtn = document.getElementById('undoBtn');
-      if (undoBtn) undoBtn.click();
-      return;
-    }
-
-    // Navigation: if in game review data, navigate review; else navigate main move history
-    if (gameReviewData) {
-      if (e.key === 'ArrowLeft') {
-        e.preventDefault();
-        navigateToGamePly(Math.max(0, gameReviewPly - 1));
-      } else if (e.key === 'ArrowRight') {
-        e.preventDefault();
-        navigateToGamePly(Math.min(gameReviewData.plies.length - 1, gameReviewPly + 1));
-      } else if (e.key === 'Home') {
-        e.preventDefault();
-        navigateToGamePly(0);
-      } else if (e.key === 'End') {
-        e.preventDefault();
-        navigateToGamePly(gameReviewData.plies.length - 1);
-      }
-    } else {
-      if (e.key === 'ArrowLeft') {
-        e.preventDefault();
-        jumpToHistoryPly(currentMoveIndex - 1);
-      } else if (e.key === 'ArrowRight') {
-        e.preventDefault();
-        jumpToHistoryPly(currentMoveIndex + 1);
-      } else if (e.key === 'Home') {
-        e.preventDefault();
-        jumpToHistoryPly(-1);
-      } else if (e.key === 'End') {
-        e.preventDefault();
-        jumpToHistoryPly(playedMoves.length - 1);
-      }
-    }
-  });
+  document.addEventListener('keydown', handleKeyboardShortcut);
 
   // Eval graph click to navigate
   el.evalGraph.addEventListener('click', (e) => {
@@ -1610,6 +1636,8 @@ function bindUI() {
     el.coachToggle.checked = coachEnabled;
     el.coachToggle.addEventListener('change', (e) => {
       coachEnabled = e.target.checked;
+      coachReqId += 1;
+      currentCoachMove = null;
       try { localStorage.setItem('pawnforge_coach', coachEnabled ? 'true' : 'false'); } catch (_e) {}
       if (coachEnabled) {
         updateCoachHint();
@@ -1638,6 +1666,7 @@ function bindUI() {
   // Sparring Mode controls
   if (el.sparringToggle) {
     el.sparringToggle.addEventListener('change', (e) => {
+      invalidateSparring();
       sparringActive = e.target.checked;
       if (sparringActive) {
         sparringPlayerColor = el.sparringColor ? el.sparringColor.value : 'w';
@@ -1654,6 +1683,7 @@ function bindUI() {
   }
   if (el.sparringColor) {
     el.sparringColor.addEventListener('change', (e) => {
+      invalidateSparring();
       sparringPlayerColor = e.target.value;
       if (sparringPlayerColor === 'b' && !boardFlipped) {
         board.flip();

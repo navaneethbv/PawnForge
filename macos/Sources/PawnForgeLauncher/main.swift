@@ -40,6 +40,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             showAlert(title: "Invalid PawnForge folder", message: "The selected folder does not contain server.js.")
             return
         }
+        stopServer()
         repositoryURL = url
         startServer()
         rebuildMenu()
@@ -52,7 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         guard let nodePath = findNode() else {
-            showAlert(title: "Node.js not found", message: "Install Node.js 18 or newer, then start PawnForge again.")
+            showAlert(title: "Node.js not found", message: "Install Node.js 22 or newer, then start PawnForge again.")
             return
         }
 
@@ -63,6 +64,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var environment = ProcessInfo.processInfo.environment
         environment["PORT"] = port
         process.environment = environment
+        process.terminationHandler = { [weak self] _ in
+            Task { @MainActor [weak self] in self?.rebuildMenu() }
+        }
         process.standardOutput = FileHandle.standardOutput
         process.standardError = FileHandle.standardError
 
@@ -82,6 +86,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         process.terminate()
+        process.waitUntilExit()
         serverProcess = nil
         rebuildMenu()
     }
@@ -136,7 +141,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let quitItem = NSMenuItem(title: "Quit PawnForge", action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
-        statusItem.menu = menu
+        self.statusItem.menu = menu
     }
 
     private func findRepository() -> URL? {

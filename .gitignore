@@ -12,3 +12,7 @@ macos/.build/
 # OS
 .DS_Store
 Thumbs.db
+
+# Browser test output
+test-results/
+playwright-report/

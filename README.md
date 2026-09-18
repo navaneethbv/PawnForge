@@ -82,9 +82,12 @@ Node.js HTTP Server (server.js)
 git clone https://github.com/navaneethbv/PawnForge.git
 cd PawnForge
 
-# 2. Build Stockfish (one-time step)
+# 2. Build Stockfish (or use pre-built binary if present)
 cd engine/Stockfish/src
-make -j$(nproc) build ARCH=x86-64
+# On Linux:
+make -j$(nproc) build ARCH=x86-64-modern
+# On macOS (Apple Silicon):
+make -j$(sysctl -n hw.ncpu) build ARCH=apple-silicon
 cd ../../..
 
 # 3. Start the server
@@ -95,21 +98,26 @@ Open **http://localhost:4173** in your browser.
 
 ### Build Stockfish
 
-The engine source is included under `engine/Stockfish/`. Build it for your platform:
+The engine source is included under `engine/Stockfish/` (Stockfish 19). Build it for your platform:
 
 ```bash
 cd engine/Stockfish/src
-make -j$(nproc) build ARCH=x86-64
+
+# On macOS (Apple Silicon):
+make -j$(sysctl -n hw.ncpu) build ARCH=apple-silicon
+
+# On Linux (modern x86_64):
+make -j$(nproc) build ARCH=x86-64-modern
 ```
 
 Common `ARCH` values:
 
 | ARCH | Description |
 |------|-------------|
-| `x86-64` | 64-bit x86 (most Linux/macOS/WSL systems) |
+| `apple-silicon` | Apple Silicon chips (M1/M2/M3/M4) |
 | `x86-64-modern` | 64-bit with POPCNT (most CPUs from ~2008+) |
 | `x86-64-avx2` | 64-bit with AVX2 (Intel Haswell+ / AMD Excavator+) |
-| `apple-silicon` | Apple M1/M2/M3 chips |
+| `x86-64` | Generic 64-bit x86 |
 | `armv8` | 64-bit ARM (Raspberry Pi 4, etc.) |
 
 Run `make help` inside `engine/Stockfish/src` for the full list.
@@ -118,7 +126,7 @@ After building, verify the binary works:
 
 ```bash
 echo "quit" | ./engine/Stockfish/src/stockfish
-# Expected: "Stockfish 16 by the Stockfish developers ..."
+# Expected: "Stockfish 19 by the Stockfish developers ..."
 ```
 
 ### Using a System-Installed Stockfish
@@ -126,9 +134,10 @@ echo "quit" | ./engine/Stockfish/src/stockfish
 If you already have Stockfish installed (e.g. via `apt install stockfish` or `brew install stockfish`), you can skip the build step. The server auto-detects it in this order:
 
 1. `STOCKFISH_BIN` environment variable (if set)
-2. `engine/Stockfish/src/stockfish` (compiled from source)
+2. `engine/Stockfish/src/stockfish` (or `stockfish-macos-universal`)
 3. `/usr/games/stockfish` (Debian/Ubuntu package location)
-4. `stockfish` on `PATH`
+4. `/usr/local/bin/stockfish` or `/opt/homebrew/bin/stockfish`
+5. `stockfish` on `PATH`
 
 To point at a specific binary:
 
@@ -193,7 +202,7 @@ The engine pool spawns up to 4 Stockfish UCI worker processes (capped at the num
 
 - **Frontend**: Vanilla JS (ES modules), chess.js, chessboardjs, Canvas API
 - **Backend**: Node.js (zero npm dependencies, built-in modules only)
-- **Engine**: Stockfish 16 (compiled from source)
+- **Engine**: Stockfish 19 (compiled from source)
 - **Protocol**: UCI over stdin/stdout, SSE for streaming
 
 ## License

@@ -9,17 +9,94 @@ import { dirname, join } from 'node:path';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-const PORT = Number(process.env.PORT || 4173);
-const ROOT = resolve(process.cwd());
+const configuredPort = Number(process.env.PORT || 4173);
+const PORT = Number.isInteger(configuredPort) && configuredPort > 0 && configuredPort <= 65535
+  ? configuredPort
+  : 4173;
+const ROOT = resolve(__dirname);
+
+class HttpError extends Error {
+  constructor(statusCode, message) {
+    super(message);
+    this.statusCode = statusCode;
+  }
+}
+
+function requireInteger(value, { name, defaultValue, min, max }) {
+  const candidate = value ?? defaultValue;
+  const parsed = Number(candidate);
+  if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
+    throw new HttpError(400, `${name} must be an integer between ${min} and ${max}.`);
+  }
+  return parsed;
+}
+
+function validateFen(value) {
+  if (typeof value !== 'string' || value.length > 128 || /[\r\n]/.test(value)) {
+    throw new HttpError(400, 'Invalid FEN.');
+  }
+
+  const fields = value.trim().split(/\s+/);
+  if (fields.length !== 6) throw new HttpError(400, 'Invalid FEN.');
+
+  const ranks = fields[0].split('/');
+  if (ranks.length !== 8) throw new HttpError(400, 'Invalid FEN.');
+
+  let whiteKingCount = 0;
+  let blackKingCount = 0;
+  for (const rank of ranks) {
+    let squares = 0;
+    for (const symbol of rank) {
+      if (/^[1-8]$/.test(symbol)) {
+        squares += Number(symbol);
+      } else if (/^[prnbqkPRNBQK]$/.test(symbol)) {
+        squares += 1;
+        if (symbol === 'K') whiteKingCount += 1;
+        if (symbol === 'k') blackKingCount += 1;
+      } else {
+        throw new HttpError(400, 'Invalid FEN.');
+      }
+    }
+    if (squares !== 8) throw new HttpError(400, 'Invalid FEN.');
+  }
+
+  if (whiteKingCount !== 1 || blackKingCount !== 1 || !/^[wb]$/.test(fields[1])) {
+    throw new HttpError(400, 'Invalid FEN.');
+  }
+  if (!/^(?:-|[KQkq]+)$/.test(fields[2]) || new Set(fields[2]).size !== fields[2].length) {
+    throw new HttpError(400, 'Invalid FEN.');
+  }
+  if (!/^(?:-|[a-h][36])$/.test(fields[3])) {
+    throw new HttpError(400, 'Invalid FEN.');
+  }
+  if (!/^\d+$/.test(fields[4]) || !/^[1-9]\d*$/.test(fields[5])) {
+    throw new HttpError(400, 'Invalid FEN.');
+  }
+
+  return fields.join(' ');
+}
 
 // Stockfish binary resolution: env var > built-in engine > system paths
 function resolveStockfish() {
   if (process.env.STOCKFISH_BIN && existsSync(process.env.STOCKFISH_BIN)) {
     return process.env.STOCKFISH_BIN;
   }
-  const builtIn = join(__dirname, 'engine', 'Stockfish', 'src', 'stockfish');
-  if (existsSync(builtIn)) return builtIn;
+  const candidateNames = [
+    'stockfish',
+    'stockfish-macos-universal',
+    'stockfish.exe',
+    'stockfish-windows-x86-64-avx2.exe',
+    'stockfish-windows-x86-64-modern.exe'
+  ];
+  for (const name of candidateNames) {
+    const p = join(__dirname, 'engine', 'Stockfish', 'src', name);
+    if (existsSync(p)) return p;
+    const pRoot = join(__dirname, 'engine', 'Stockfish', name);
+    if (existsSync(pRoot)) return pRoot;
+  }
   if (existsSync('/usr/games/stockfish')) return '/usr/games/stockfish';
+  if (existsSync('/usr/local/bin/stockfish')) return '/usr/local/bin/stockfish';
+  if (existsSync('/opt/homebrew/bin/stockfish')) return '/opt/homebrew/bin/stockfish';
   return 'stockfish';
 }
 
@@ -251,9 +328,14 @@ class EngineWorker {
     this.ready = false;
     this.lines = [];
     this.waiters = [];
+    this.stdoutBuffer = '';
+    this.needsReinitialization = false;
 
     this.proc.stdout.on('data', (buf) => {
-      for (const line of buf.toString().split('\n')) {
+      this.stdoutBuffer += buf.toString();
+      const chunks = this.stdoutBuffer.split(/\r?\n/);
+      this.stdoutBuffer = chunks.pop() || '';
+      for (const line of chunks) {
         const l = line.trim();
         if (!l) continue;
         this.lines.push(l);
@@ -264,6 +346,8 @@ class EngineWorker {
     });
 
     this.proc.stderr.on('data', () => {});
+    this.proc.on('error', () => { this.ready = false; });
+    this.proc.on('exit', () => { this.ready = false; });
 
     this.send('uci');
     this.send('isready');
@@ -303,17 +387,33 @@ class EngineWorker {
 
   async ensureReady() {
     if (this.ready) return;
+    if (this.needsReinitialization) {
+      this.lines = [];
+      this.needsReinitialization = false;
+      this.send('stop');
+      this.send('uci');
+      this.send('isready');
+    }
     await this.waitFor((l) => l === 'uciok');
     await this.waitFor((l) => l === 'readyok');
     this.ready = true;
   }
 
   run(task) {
-    this.queue = this.queue.then(async () => {
-      await this.ensureReady();
-      return task(this);
+    const job = this.queue.catch(() => {}).then(async () => {
+      try {
+        await this.ensureReady();
+        return await task(this);
+      } catch (error) {
+        this.ready = false;
+        this.needsReinitialization = true;
+        this.lines = [];
+        try { this.send('stop'); } catch (_error) {}
+        throw error;
+      }
     });
-    return this.queue;
+    this.queue = job.catch(() => {});
+    return job;
   }
 }
 
@@ -327,6 +427,9 @@ class EnginePool {
   }
 
   acquire() {
+    if (!this.enabled || this.workers.length === 0) {
+      throw new Error('Stockfish is not available. Set STOCKFISH_BIN or build engine/Stockfish.');
+    }
     const w = this.workers[this.pointer % this.workers.length];
     this.pointer += 1;
     return w;
@@ -343,11 +446,17 @@ class EnginePool {
       w.send(`go depth ${depth}`);
 
       const lines = [];
+      let checkmateScore = null;
       while (true) {
         const line = await w.waitFor(() => true, 8000);
         if (line.startsWith('bestmove')) break;
-        if (line.startsWith('info') && line.includes(' pv ') && line.includes(' multipv ')) {
-          lines.push(line);
+        if (line.startsWith('info')) {
+          if (line.includes('score mate 0')) {
+            checkmateScore = -100000;
+          }
+          if (line.includes(' pv ') && line.includes(' multipv ')) {
+            lines.push(line);
+          }
         }
       }
 
@@ -361,7 +470,8 @@ class EnginePool {
       }
 
       const topMoves = [...topById.values()].sort((a, b) => a.rank - b.rank);
-      return { fen, topMoves, bestEvalCp: topMoves[0]?.evalCp ?? 0, source: 'stockfish' };
+      const bestEvalCp = topMoves.length > 0 ? topMoves[0].evalCp : (checkmateScore ?? 0);
+      return { fen, topMoves, bestEvalCp, source: 'stockfish' };
     });
 
     cache.set(key, result);
@@ -369,6 +479,7 @@ class EnginePool {
   }
 
   async legalMoves(fen) {
+    if (!this.enabled) throw new Error('Stockfish is not available. Set STOCKFISH_BIN or build engine/Stockfish.');
     const key = `moves:${fen}`;
     if (cache.has(key)) return cache.get(key);
     const moves = await this.acquire().run(async (w) => {
@@ -388,6 +499,7 @@ class EnginePool {
   }
 
   async evaluateMove(fen, move, movetime = 120) {
+    if (!this.enabled) throw new Error('Stockfish is not available. Set STOCKFISH_BIN or build engine/Stockfish.');
     return this.acquire().run(async (w) => {
       w.send('setoption name MultiPV value 1');
       w.send(`position fen ${fen} moves ${move}`);
@@ -437,8 +549,8 @@ function parseBody(req, maxBytes = 10 * 1024 * 1024) {
       if (!raw) return resolve({});
       try {
         resolve(JSON.parse(raw));
-      } catch (e) {
-        reject(e);
+      } catch (_error) {
+        reject(new HttpError(400, 'Request body must be valid JSON.'));
       }
     };
 
@@ -464,11 +576,14 @@ async function handleApi(req, res) {
     if (req.method === 'POST' && req.url === '/api/analyze/position') {
       if (!pool.enabled) return sendJson(res, 503, { error: 'Stockfish unavailable.' });
       const body = await parseBody(req);
-      if (!body.fen) return sendJson(res, 400, { error: 'FEN is required' });
+      if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        throw new HttpError(400, 'Request body must be a JSON object.');
+      }
+      const fen = validateFen(body.fen);
       const result = await pool.analyzePosition({
-        fen: body.fen,
-        depth: body.settings?.depth ?? 12,
-        multipv: body.settings?.multiPv ?? 3
+        fen,
+        depth: requireInteger(body.settings?.depth, { name: 'depth', defaultValue: 12, min: 1, max: 20 }),
+        multipv: requireInteger(body.settings?.multiPv, { name: 'multiPv', defaultValue: 3, min: 1, max: 5 })
       });
       return sendJson(res, 200, result);
     }
@@ -477,10 +592,17 @@ async function handleApi(req, res) {
     if (req.method === 'POST' && req.url === '/api/analyze/all-moves') {
       const body = await parseBody(req);
       if (!pool.enabled) return sendJson(res, 503, { error: 'Stockfish unavailable.' });
-      if (!body.fen) return sendJson(res, 400, { error: 'FEN is required' });
+      if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        throw new HttpError(400, 'Request body must be a JSON object.');
+      }
+      const fen = validateFen(body.fen);
 
-      const fen = body.fen;
-      const movetime = Number(body.settings?.movetimeMs ?? 120);
+      const movetime = requireInteger(body.settings?.movetimeMs, {
+        name: 'movetimeMs',
+        defaultValue: 120,
+        min: 20,
+        max: 1000
+      });
       const legal = await pool.legalMoves(fen);
 
       res.writeHead(200, {
@@ -490,7 +612,7 @@ async function handleApi(req, res) {
       });
 
       let clientDisconnected = false;
-      req.on('close', () => { clientDisconnected = true; });
+      res.on('close', () => { clientDisconnected = true; });
 
       const rows = [];
       for (let i = 0; i < legal.length; i += 1) {
@@ -518,29 +640,42 @@ async function handleApi(req, res) {
     if (req.method === 'POST' && req.url === '/api/analyze/game') {
       if (!pool.enabled) return sendJson(res, 503, { error: 'Stockfish unavailable.' });
       const body = await parseBody(req);
-      const moves = parsePgnMoves(body.pgn || '');
-      const fenSequence = body.fenSequence || [];
+      if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        throw new HttpError(400, 'Request body must be a JSON object.');
+      }
+      const fenSequence = body.fenSequence;
       const preMoveSequence = body.preMoveSequence || [];
-
-      if (!fenSequence.length) {
-        return sendJson(res, 400, { error: 'fenSequence is required for game analysis.' });
+      if (!Array.isArray(fenSequence) || fenSequence.length === 0 || fenSequence.length > 500) {
+        throw new HttpError(400, 'fenSequence must contain between 1 and 500 FEN positions.');
+      }
+      if (!Array.isArray(preMoveSequence) || preMoveSequence.length > fenSequence.length) {
+        throw new HttpError(400, 'preMoveSequence must be an array no longer than fenSequence.');
       }
 
+      const normalizedFens = fenSequence.map(validateFen);
+      const normalizedPreFens = preMoveSequence.map((fen) => fen == null ? null : validateFen(fen));
+      const pgn = body.pgn ?? '';
+      if (typeof pgn !== 'string') throw new HttpError(400, 'pgn must be a string.');
+      const moves = (Array.isArray(body.moves) && body.moves.length === normalizedFens.length)
+        ? body.moves
+        : parsePgnMoves(pgn);
+      const depth = requireInteger(body.settings?.depth, { name: 'depth', defaultValue: 10, min: 1, max: 20 });
+
       const plies = [];
-      for (let i = 0; i < fenSequence.length; i += 1) {
-        const fen = fenSequence[i];
+      for (let i = 0; i < normalizedFens.length; i += 1) {
+        const fen = normalizedFens[i];
         const postMoveAnalysis = await pool.analyzePosition({
           fen,
-          depth: body.settings?.depth ?? 10,
+          depth,
           multipv: 1
         });
         const evalAfterMove = postMoveAnalysis.bestEvalCp;
 
         let deltaCp = 0;
-        if (i > 0 && preMoveSequence[i]) {
+        if (normalizedPreFens[i] !== undefined && normalizedPreFens[i] !== null) {
           const preMoveAnalysis = await pool.analyzePosition({
-            fen: preMoveSequence[i],
-            depth: body.settings?.depth ?? 10,
+            fen: normalizedPreFens[i],
+            depth,
             multipv: 1
           });
           const bestBeforeMove = preMoveAnalysis.bestEvalCp;
@@ -570,8 +705,9 @@ async function handleApi(req, res) {
 
     // GET /api/opening
     if (req.method === 'GET' && req.url.startsWith('/api/opening')) {
-      const url = new URL(req.url, `http://${req.headers.host}`);
+      const url = new URL(req.url, 'http://localhost');
       const moves = (url.searchParams.get('moves') || '').split(' ').filter(Boolean);
+      if (moves.length > 500) throw new HttpError(400, 'Too many moves.');
       return sendJson(res, 200, detectOpening(moves));
     }
 
@@ -587,8 +723,9 @@ async function handleApi(req, res) {
 
     return sendJson(res, 404, { error: 'Not found' });
   } catch (error) {
-    console.error('API error:', error.message);
-    return sendJson(res, 500, { error: error.message });
+    const status = error.statusCode || 500;
+    if (status >= 500) console.error('API error:', error.message);
+    return sendJson(res, status, { error: error.message || 'Request failed.' });
   }
 }
 
@@ -605,7 +742,22 @@ function serveStatic(req, res) {
     return;
   }
 
+  if (decoded.includes('\0')) {
+    res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('Bad Request');
+    return;
+  }
+
   const normalized = decoded.replace(/^\/+/, '');
+  const segments = normalized.split('/');
+  const isPublicFile = normalized === 'index.html'
+    || normalized === 'overlay.js'
+    || normalized.startsWith('src/');
+  if (!isPublicFile || segments.some((segment) => !segment || segment === '.' || segment === '..' || segment.startsWith('.'))) {
+    res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('Not found');
+    return;
+  }
   const filePath = resolve(ROOT, normalized);
 
   const rootWithSep = ROOT.endsWith(sep) ? ROOT : ROOT + sep;

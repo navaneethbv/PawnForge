@@ -256,7 +256,8 @@ Worker tests use a controlled UCI process to exercise crashes, continuous-output
 Browser tests cover FEN loading, illegal drags, history, stale sparring/review responses, custom-position summaries, API access restrictions, and real-engine analysis/explorer results.
 GitHub Actions runs JavaScript lint and syntax checks, Manifest V3 asset validation, workflow validation, Node 22/24 tests, real-engine browser and extension tests, dependency auditing/review, and a Swift build with warnings treated as errors.
 The required `PR checks` job fails when any applicable CI job fails, is cancelled, or is skipped.
-GitHub CodeQL default setup separately analyzes the supported JavaScript, Swift, Actions, and bundled C++ code.
+The CodeQL workflow separately analyzes JavaScript, Swift, Actions, and bundled C++ code.
+Swift analysis explicitly builds the macOS package instead of relying on repository-wide autobuild detection.
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the enforced branch policy and check details.
 Native menu interaction and third-party chess-site compatibility remain manual checks.
 

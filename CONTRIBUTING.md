@@ -8,10 +8,11 @@ The repository owner is the only current collaborator/admin and is listed in `.g
 Required approvals are zero because GitHub does not allow authors to approve their own pull requests.
 This does not waive the required checks.
 
-The ruleset requires `PR checks`, Codacy Static Code Analysis, CodeFactor, and CommitCheck.
+The ruleset requires `PR checks`, the four `CodeQL (language)` jobs, Codacy Static Code Analysis, CodeFactor, and CommitCheck.
 GitHub Actions, Codacy, and CodeFactor checks are bound to their respective GitHub Apps.
 CodeQL merge protection also requires scanning results and blocks qualifying new high/critical security findings and error-level code alerts in the PR diff.
-GitHub's code scanning rules have exceptions, including Dependabot PRs analyzed by default setup; dependency audit/review still run on those PRs.
+GitHub's code scanning merge protection applies to qualifying alerts in the PR diff.
+Required CodeQL job statuses additionally ensure analysis jobs complete successfully.
 
 `.github/main-ruleset.json` records the configured policy.
 Editing that file does not change GitHub settings automatically; an authorized administrator must apply it through the repository rules API and verify the effective rules afterward.
@@ -29,14 +30,17 @@ Do not rename `PR checks` without updating the live ruleset.
 | Dependency review | PR dependency changes introduce no known high or critical vulnerabilities |
 | PR checks | Every applicable job above succeeded; failures, cancellations, and unexpected skips block merging |
 
-CodeQL runs separately through GitHub default setup so it is not duplicated in the application workflow.
+CodeQL runs separately through `.github/workflows/codeql.yml`, including a weekly scan.
+Its Swift job explicitly builds `macos/`; JavaScript, Actions, and C++ use analysis without a build.
+Default setup is disabled to avoid duplicate scans and ambiguous Swift autobuild detection.
 Codacy, CodeFactor, and CommitCheck also report separately.
 Application linting excludes vendored Stockfish and generated output.
 The browser suite uses a system-installed Stockfish in Linux CI and pinned test copies of frontend libraries.
 It is an integration check, not a rebuild or exhaustive validation of the vendored C++ engine.
 Native menu interaction and compatibility with third-party chess sites remain manual checks.
 
-CI uses commit-pinned actions, read-only repository permissions, dependency installation without lifecycle scripts, job timeouts, and cancellation of superseded runs.
+CI uses commit-pinned actions and read-only repository permissions except for CodeQL result uploads.
+It also uses dependency installation without lifecycle scripts, job timeouts, and cancellation of superseded runs.
 Browser failures retain screenshots and traces for seven days.
 
 ## Local checks

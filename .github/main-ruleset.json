@@ -43,6 +43,22 @@
             "integration_id": 15368
           },
           {
+            "context": "CodeQL (javascript-typescript)",
+            "integration_id": 15368
+          },
+          {
+            "context": "CodeQL (swift)",
+            "integration_id": 15368
+          },
+          {
+            "context": "CodeQL (actions)",
+            "integration_id": 15368
+          },
+          {
+            "context": "CodeQL (c-cpp)",
+            "integration_id": 15368
+          },
+          {
             "context": "Codacy Static Code Analysis",
             "integration_id": 56611
           },

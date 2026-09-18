@@ -13,7 +13,7 @@ export default [
     },
   },
   {
-    files: ['*.js', 'scripts/**/*.js', 'tests/**/*.js'],
+    files: ['server.js', 'engine-worker.js', '*.config.js', 'scripts/**/*.js', 'tests/**/*.js'],
     languageOptions: { globals: globals.node },
   },
   {

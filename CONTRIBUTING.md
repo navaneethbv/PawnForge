@@ -11,7 +11,6 @@ This does not waive the required checks.
 The ruleset requires `PR checks`, the four `CodeQL (language)` jobs, Codacy Static Code Analysis, CodeFactor, and CommitCheck.
 GitHub Actions, Codacy, and CodeFactor checks are bound to their respective GitHub Apps.
 CodeQL merge protection also requires scanning results and blocks qualifying new high/critical security findings and error-level code alerts in the PR diff.
-GitHub's code scanning merge protection applies to qualifying alerts in the PR diff.
 Required CodeQL job statuses additionally ensure analysis jobs complete successfully.
 
 `.github/main-ruleset.json` records the configured policy.

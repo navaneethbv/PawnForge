@@ -33,8 +33,13 @@
   let pointerMove = null;
   let analysisRequest = 0;
   let analysisController = null;
+  let analysisInFlight = false;
+  let observedPositionKey = '';
+  let observedPositionAt = 0;
   let pageFenPromise = null;
   let pageFenRequestedAt = 0;
+
+  const POSITION_STABILITY_MS = 600;
 
   const style = document.createElement('style');
   style.textContent = `
@@ -177,16 +182,17 @@
       box-sizing: border-box;
     }
     .pawnforge-pointer-origin {
-      border: 3px solid #22c55e;
+      border: 3px solid #ef4444;
       border-radius: 8px;
-      box-shadow: 0 0 18px rgba(34, 197, 94, 0.9), inset 0 0 10px rgba(34, 197, 94, 0.32);
+      background: rgba(239, 68, 68, 0.2);
+      box-shadow: 0 0 18px rgba(239, 68, 68, 0.95), inset 0 0 10px rgba(239, 68, 68, 0.38);
       animation: pawnforge-pulse 1.35s infinite alternate ease-in-out;
     }
     .pawnforge-pointer-target {
-      border: 3px dashed #10b981;
-      border-radius: 50%;
-      background: rgba(16, 185, 129, 0.25);
-      box-shadow: 0 0 18px rgba(16, 185, 129, 0.85);
+      border: 3px solid #ef4444;
+      border-radius: 8px;
+      background: rgba(239, 68, 68, 0.38);
+      box-shadow: 0 0 18px rgba(239, 68, 68, 0.9), inset 0 0 12px rgba(239, 68, 68, 0.34);
     }
     @keyframes pawnforge-pulse {
       from { transform: scale(0.96); opacity: 0.78; }
@@ -335,7 +341,11 @@
         if (isSquareBoard(rect)) candidates.push({ element, rect, area: rect.width * rect.height });
       }
     }
-    const selected = candidates.sort((a, b) => b.area - a.area)[0];
+    const scored = candidates.map((candidate) => ({
+      ...candidate,
+      pieceCount: candidate.element.querySelectorAll('.piece, piece, [data-piece], [data-color][data-type]').length
+    }));
+    const selected = scored.sort((a, b) => b.pieceCount - a.pieceCount || a.area - b.area)[0];
     return selected ? { ...selected, orientation: boardOrientation(selected.element) } : null;
   }
 
@@ -365,6 +375,14 @@
     return `${String.fromCharCode(97 + fileIndex)}${rank}`;
   }
 
+  function explicitSquare(element) {
+    const dataSquare = element.getAttribute?.('data-square') || element.getAttribute?.('data-position');
+    if (/^[a-h][1-8]$/.test(dataSquare || '')) return dataSquare.toLowerCase();
+    const match = classText(element).match(/(?:^|\s)square-([1-8])([1-8])(?:\s|$)/);
+    if (!match) return null;
+    return `${String.fromCharCode(96 + Number(match[1]))}${match[2]}`;
+  }
+
   function sideFromDom(board) {
     if (sideMode === 'w' || sideMode === 'b') return sideMode;
     const elements = [board?.element, board?.element?.parentElement, board?.element?.parentElement?.parentElement];
@@ -384,10 +402,28 @@
     return null;
   }
 
+  function moveRowText(value) {
+    return String(value || '').replace(/\s+/g, ' ').trim();
+  }
+
+  function sideFromMoveList() {
+    const rows = [];
+    for (const element of document.querySelectorAll('body *')) {
+      const text = moveRowText(element.textContent);
+      if (!/^\d+\.\s*\S+(?:\s+\S+)?$/.test(text)) continue;
+      rows.push(text);
+    }
+    const lastRow = rows.at(-1);
+    if (!lastRow) return null;
+    const match = lastRow.match(/^\d+\.\s*\S+(?:\s+(\S+))?$/);
+    if (!match) return null;
+    return match[1] ? 'w' : 'b';
+  }
+
   function readDomPosition() {
     const board = findBoardModel();
     if (!board) return null;
-    const pieceSelectors = ['piece', '[data-piece]', '[data-color][data-type]', '[class*="piece" i]'];
+    const pieceSelectors = ['.piece', 'piece', '[data-piece]', '[data-color][data-type]'];
     const pieces = [];
     const seen = new Set();
     for (const selector of pieceSelectors) {
@@ -396,15 +432,19 @@
         seen.add(element);
         const piece = pieceToken(element);
         const rect = element.getBoundingClientRect();
-        if (piece && rect.width > 2 && rect.height > 2 && rect.right > board.rect.left && rect.left < board.rect.right && rect.bottom > board.rect.top && rect.top < board.rect.bottom) {
-          pieces.push({ piece, rect });
+        const computed = window.getComputedStyle(element);
+        const isVisible = computed.display !== 'none' && computed.visibility !== 'hidden' && Number(computed.opacity || 1) > 0.05;
+        if (piece && isVisible && rect.width > 2 && rect.height > 2 && rect.right > board.rect.left && rect.left < board.rect.right && rect.bottom > board.rect.top && rect.top < board.rect.bottom) {
+          pieces.push({ piece, rect, square: explicitSquare(element) });
         }
       }
     }
     if (pieces.length < 2) return null;
+    const explicitPieces = pieces.filter((item) => item.square);
+    const sourcePieces = explicitPieces.length >= 2 ? explicitPieces : pieces;
     const squares = new Map();
-    for (const item of pieces) {
-      const square = squareFromPoint(board.rect, item.rect.left + item.rect.width / 2, item.rect.top + item.rect.height / 2, board.orientation);
+    for (const item of sourcePieces) {
+      const square = item.square || squareFromPoint(board.rect, item.rect.left + item.rect.width / 2, item.rect.top + item.rect.height / 2, board.orientation);
       squares.set(square, item.piece);
     }
     const rows = [];
@@ -423,7 +463,15 @@
       if (empty) row += empty;
       rows.push(row);
     }
-    const side = sideFromDom(board);
+    const pieceValues = [...squares.values()];
+    const whiteKingCount = pieceValues.filter((piece) => piece === 'K').length;
+    const blackKingCount = pieceValues.filter((piece) => piece === 'k').length;
+    const whitePawnCount = pieceValues.filter((piece) => piece === 'P').length;
+    const blackPawnCount = pieceValues.filter((piece) => piece === 'p').length;
+    if (pieceValues.length > 32 || whiteKingCount !== 1 || blackKingCount !== 1 || whitePawnCount > 8 || blackPawnCount > 8) {
+      return { board, unstable: true };
+    }
+    const side = sideFromDom(board) || sideFromMoveList();
     if (!side) return { board, sideUnknown: true };
     return { fen: `${rows.join('/')} ${side} - - 0 1`, board, source: 'visible board' };
   }
@@ -513,12 +561,34 @@
     return score >= 0 ? `+${formatted}` : formatted;
   }
 
+  function pieceNameAt(fen, square) {
+    const rows = String(fen || '').split(' ')[0].split('/');
+    const rank = Number(square?.[1]);
+    const file = square?.charCodeAt(0) - 97;
+    const row = rows[8 - rank];
+    if (!row || !Number.isInteger(file) || file < 0 || file > 7) return 'piece';
+    let fileIndex = 0;
+    for (const token of row) {
+      if (/\d/.test(token)) {
+        fileIndex += Number(token);
+      } else {
+        if (fileIndex === file) {
+          const names = { p: 'pawn', n: 'knight', b: 'bishop', r: 'rook', q: 'queen', k: 'king' };
+          return names[token.toLowerCase()] || 'piece';
+        }
+        fileIndex += 1;
+      }
+    }
+    return 'piece';
+  }
+
   function selectCandidate(index) {
     const candidate = activeCandidates[index];
     if (!candidate || typeof candidate.uci !== 'string' || candidate.uci.length < 4) return;
     const from = candidate.uci.slice(0, 2).toUpperCase();
     const to = candidate.uci.slice(2, 4).toUpperCase();
     const turn = (currentSnapshot?.fen || '').split(' ')[1] === 'b' ? 'Black' : 'White';
+    const pieceName = pieceNameAt(currentSnapshot?.fen, candidate.uci.slice(0, 2));
     const moveLine = typeof candidate.pv === 'string' ? candidate.pv.split(/\s+/).slice(0, 5).join(' ') : '';
     msgEl.replaceChildren();
     const summary = document.createElement('div');
@@ -531,7 +601,7 @@
     summary.append(move, evaluation);
     const explanation = document.createElement('div');
     explanation.style.cssText = 'margin-top:6px;color:#cbd5e1;font-size:11px;';
-    explanation.textContent = `${turn} should move ${from} to ${to}${moveLine ? ` · ${moveLine}` : ''}`;
+    explanation.textContent = `${turn} should move the ${pieceName} on ${from} to ${to}${moveLine ? ` · ${moveLine}` : ''}`;
     msgEl.append(summary, explanation);
     candidateEl.querySelectorAll('.pawnforge-candidate-pill').forEach((element, candidateIndex) => {
       element.classList.toggle('active', candidateIndex === index);
@@ -561,7 +631,13 @@
     if (!active || requestId !== analysisRequest) return;
 
     if (!snapshot?.fen) {
-      if (snapshot?.sideUnknown) {
+      if (snapshot?.unstable) {
+        lastPositionKey = '';
+        currentSnapshot = snapshot;
+        clearAnalysisUi();
+        setMessage('Waiting for the board to settle...');
+        setHint('The site is animating or exposing duplicate pieces.');
+      } else if (snapshot?.sideUnknown) {
         lastPositionKey = '';
         currentSnapshot = snapshot;
         clearAnalysisUi();
@@ -577,25 +653,40 @@
       return;
     }
 
+    const now = Date.now();
+    if (!force) {
+      if (snapshot.fen !== observedPositionKey) {
+        observedPositionKey = snapshot.fen;
+        observedPositionAt = now;
+        return;
+      }
+      if (now - observedPositionAt < POSITION_STABILITY_MS) return;
+    } else {
+      observedPositionKey = snapshot.fen;
+      observedPositionAt = now;
+    }
+
     if (!force && snapshot.fen === lastPositionKey) {
       currentSnapshot = snapshot;
       updatePointerPositions();
       return;
     }
 
+    if (analysisInFlight) return;
+
     lastPositionKey = snapshot.fen;
     currentSnapshot = snapshot;
     clearAnalysisUi();
     setMessage(`Analyzing ${snapshot.source || 'position'}...`);
     setHint('PawnForge is checking the strongest legal continuations.');
-    if (analysisController) analysisController.abort();
+    analysisInFlight = true;
     analysisController = new AbortController();
 
     try {
       const response = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fen: snapshot.fen, settings: { depth: 10, multiPv: 3 } }),
+        body: JSON.stringify({ fen: snapshot.fen, settings: { depth: 8, multiPv: 3 } }),
         signal: analysisController.signal
       });
       if (!response.ok) {
@@ -604,6 +695,17 @@
       }
       const data = await response.json();
       if (!active || requestId !== analysisRequest || snapshot.fen !== lastPositionKey) return;
+      const latestSnapshot = await detectCurrentPosition();
+      if (!active || requestId !== analysisRequest) return;
+      if (!latestSnapshot?.fen || latestSnapshot.fen !== snapshot.fen) {
+        lastPositionKey = '';
+        currentSnapshot = latestSnapshot;
+        clearAnalysisUi();
+        setMessage(latestSnapshot?.unstable ? 'Waiting for the board to settle...' : 'Board changed. Re-analyzing...');
+        setHint(latestSnapshot?.unstable ? 'The site is animating or exposing duplicate pieces.' : 'The position changed while the engine was thinking.');
+        window.setTimeout(() => analyzePosition(false), POSITION_STABILITY_MS + 25);
+        return;
+      }
       if (!Array.isArray(data.topMoves) || data.topMoves.length === 0) {
         setMessage('The engine returned no legal moves for this position.');
         return;
@@ -615,6 +717,8 @@
       clearAnalysisUi();
       setMessage('Engine unavailable. Start PawnForge and check the endpoint.');
       setHint(error?.message || endpoint);
+    } finally {
+      analysisInFlight = false;
     }
   }
 
@@ -640,7 +744,9 @@
     active = next;
     switchEl.checked = active;
     if (!active) {
+      analysisRequest += 1;
       if (analysisController) analysisController.abort();
+      analysisInFlight = false;
       clearAnalysisUi();
       setMessage('Coach assistance is off.');
       setHint('Turn Coach on to resume position detection.');
@@ -720,5 +826,5 @@
   }
 
   loadSettings().finally(() => analyzePosition(true));
-  window.setInterval(() => analyzePosition(false), 1200);
+  window.setInterval(() => analyzePosition(false), 1500);
 })();

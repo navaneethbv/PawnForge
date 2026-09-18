@@ -16,10 +16,12 @@ If the server uses another port, update the API field in the overlay and choose 
 ## How position detection works
 
 PawnForge first asks the page for a full FEN through a Chrome main-world bridge.
-If the page does not expose one, it reads visible pieces from common DOM chessboard structures and asks for the side to move when the board exposes it.
+If the page does not expose one, it reads visible pieces from common DOM chessboard structures.
+Auto detect uses turn metadata when available and falls back to the bottom move-list row: a complete white and black pair means White moves next, while a row containing only White's move means Black moves next.
+The overlay waits for a stable board snapshot and never overlaps engine requests while a previous analysis is running.
 The Side selector and manual FEN field cover sites that hide that state.
 
-The overlay can render its pointers over any visible square-based or DOM-backed chessboard.
+The overlay can render red origin and destination pointers over any visible square-based or DOM-backed chessboard.
 A canvas-only board without a page FEN needs a manually pasted FEN because browser content scripts cannot reliably recover hidden canvas state.
 
 ## Scope and privacy

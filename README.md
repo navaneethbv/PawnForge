@@ -189,7 +189,8 @@ curl "http://localhost:4173/api/opening?moves=e4+e5+Nf3+Nc6+Bb5"
 
 The repository root also contains a Manifest V3 Chrome extension.
 Start PawnForge with `npm start`, open `chrome://extensions`, enable Developer mode, and load this repository directory as an unpacked extension.
-The Coach overlay runs on HTTP and HTTPS chess sites, reads a page FEN or visible DOM pieces, calls the local Stockfish API, and highlights the recommended origin and destination squares.
+The Coach overlay runs on HTTP and HTTPS chess sites, reads a page FEN or visible DOM pieces, calls the local Stockfish API, and highlights the recommended origin and destination squares in red.
+Auto detect uses the site's turn metadata when available and falls back to the bottom move-list row, so a completed white and black pair means White moves next while a row containing only White's move means Black moves next.
 Use the Side selector or paste a full FEN when a site does not expose whose turn it is or renders its board only to a canvas.
 The API field supports a different local server port.
 

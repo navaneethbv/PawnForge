@@ -927,8 +927,18 @@ select {
   color: var(--text);
 }
 
-.coach-toggle-label input {
-  display: none;
+.coach-toggle-label input,
+.sparring-toggle-label input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+
+.coach-toggle-label:focus-within .coach-slider,
+.sparring-toggle-label:focus-within .coach-slider {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
 }
 
 .coach-slider {
@@ -1127,9 +1137,6 @@ select {
   user-select: none;
 }
 
-.sparring-toggle-label input {
-  display: none;
-}
 
 .sparring-toggle-label input:checked + .coach-slider {
   background-color: var(--accent);
@@ -1243,3 +1250,21 @@ body.embed-mode .layout {
 body.embed-mode .center-panel {
   display: none;
 }
+
+/* Allow the board and analysis controls to fit narrow screens. */
+.panel, .board-container { min-width: 0; }
+@media (max-width: 800px) {
+  .layout { grid-template-columns: minmax(0, 1fr); }
+  .topbar { flex-wrap: wrap; }
+  .topbar-nav { order: 3; width: 100%; flex-wrap: wrap; }
+  .tab-btn { flex: 1; padding-inline: 0.5rem; }
+  .board-container { width: 0; }
+  .game-controls-row, .sparring-row { flex-wrap: wrap; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}
+
+.move-san, .game-move { font: inherit; background: transparent; border: 0; color: inherit; }
+.move-san:focus-visible, .game-move:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.fen-row input { min-width: 0; }

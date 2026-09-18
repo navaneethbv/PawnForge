@@ -11,7 +11,12 @@ swift run --package-path macos -- --repo /Users/navaneethbv/Desktop/Projects/Paw
 ```
 
 When launched from the repository directory, `--repo` can be omitted.
-The launcher starts the server on port `4173` and looks for Node.js in `PATH`, Homebrew, and the standard system locations.
+The launcher starts the server on port `4173` and looks for Node.js 22 or newer in `PATH`, Homebrew, and the standard system locations.
 
 After the server starts, load the repository root as an unpacked extension in Chrome once.
 The menu item **Open Chrome extensions** takes you to that setup page.
+
+The menu is attached to the menu bar status item and refreshes when the server exits.
+Choosing a different repository stops the previous server before starting the selected one.
+Stopping the server also terminates its Stockfish workers.
+Verify the native menu manually after `swift build --package-path macos`; compilation alone does not verify menu interaction.

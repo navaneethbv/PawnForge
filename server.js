@@ -1,8 +1,9 @@
+import { EngineWorker } from './engine-worker.js';
 import http from 'node:http';
 import os from 'node:os';
 import { createReadStream, existsSync } from 'node:fs';
 import { extname, resolve, sep } from 'node:path';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -327,108 +328,12 @@ function findContinuations(moveList) {
 }
 
 // ── Engine Worker ──
-class EngineWorker {
-  constructor() {
-    this.proc = spawn(STOCKFISH_BIN);
-    this.queue = Promise.resolve();
-    this.ready = false;
-    this.lines = [];
-    this.waiters = [];
-    this.stdoutBuffer = '';
-    this.needsReinitialization = false;
-
-    this.proc.stdout.on('data', (buf) => {
-      this.stdoutBuffer += buf.toString();
-      const chunks = this.stdoutBuffer.split(/\r?\n/);
-      this.stdoutBuffer = chunks.pop() || '';
-      for (const line of chunks) {
-        const l = line.trim();
-        if (!l) continue;
-        this.lines.push(l);
-        const pending = [...this.waiters];
-        this.waiters = [];
-        pending.forEach((r) => r());
-      }
-    });
-
-    this.proc.stderr.on('data', () => {});
-    this.proc.on('error', () => { this.ready = false; });
-    this.proc.on('exit', () => { this.ready = false; });
-
-    this.send('uci');
-    this.send('isready');
-  }
-
-  send(cmd) {
-    this.proc.stdin.write(`${cmd}\n`);
-  }
-
-  async waitFor(predicate, timeoutMs = 4000) {
-    const deadline = Date.now() + timeoutMs;
-    while (true) {
-      const idx = this.lines.findIndex(predicate);
-      if (idx !== -1) {
-        const matched = this.lines[idx];
-        this.lines = this.lines.slice(idx + 1);
-        return matched;
-      }
-      const remaining = deadline - Date.now();
-      if (remaining <= 0) throw new Error('Engine timeout');
-      await new Promise((resolve, reject) => {
-        const timer = setTimeout(() => {
-          const i = this.waiters.indexOf(waiter);
-          if (i !== -1) this.waiters.splice(i, 1);
-          reject(new Error('Engine timeout'));
-        }, remaining);
-        const waiter = () => {
-          clearTimeout(timer);
-          const i = this.waiters.indexOf(waiter);
-          if (i !== -1) this.waiters.splice(i, 1);
-          resolve();
-        };
-        this.waiters.push(waiter);
-      });
-    }
-  }
-
-  async ensureReady() {
-    if (this.ready) return;
-    if (this.needsReinitialization) {
-      this.lines = [];
-      this.needsReinitialization = false;
-      this.send('stop');
-      this.send('uci');
-      this.send('isready');
-    }
-    await this.waitFor((l) => l === 'uciok');
-    await this.waitFor((l) => l === 'readyok');
-    this.ready = true;
-  }
-
-  run(task) {
-    const job = this.queue.catch(() => {}).then(async () => {
-      try {
-        await this.ensureReady();
-        return await task(this);
-      } catch (error) {
-        this.ready = false;
-        this.needsReinitialization = true;
-        this.lines = [];
-        try { this.send('stop'); } catch (_error) {}
-        throw error;
-      }
-    });
-    this.queue = job.catch(() => {});
-    return job;
-  }
-}
-
 // ── Engine Pool ──
 class EnginePool {
   constructor(size) {
     this.enabled = ENGINE_AVAILABLE;
     this.size = size;
-    this.workers = this.enabled ? Array.from({ length: size }, () => new EngineWorker()) : [];
+    this.workers = this.enabled ? Array.from({ length: size }, () => new EngineWorker(STOCKFISH_BIN)) : [];
     this.pointer = 0;
   }
 
@@ -436,12 +341,13 @@ class EnginePool {
     if (!this.enabled || this.workers.length === 0) {
       throw new Error('Stockfish is not available. Set STOCKFISH_BIN or build engine/Stockfish.');
     }
-    const w = this.workers[this.pointer % this.workers.length];
+    const ordered = this.workers.slice(this.pointer % this.workers.length).concat(this.workers.slice(0, this.pointer % this.workers.length));
+    const w = ordered.reduce((best, worker) => worker.pending < best.pending ? worker : best);
     this.pointer += 1;
     return w;
   }
 
-  async analyzePosition({ fen, depth = 12, multipv = 3 }) {
+  async analyzePosition({ fen, depth = 12, multipv = 3, signal }) {
     if (!this.enabled) throw new Error('Stockfish is not available. Set STOCKFISH_BIN or build engine/Stockfish.');
     const key = `pos:${fen}:${depth}:${multipv}`;
     if (cache.has(key)) return cache.get(key);
@@ -478,13 +384,13 @@ class EnginePool {
       const topMoves = [...topById.values()].sort((a, b) => a.rank - b.rank);
       const bestEvalCp = topMoves.length > 0 ? topMoves[0].evalCp : (checkmateScore ?? 0);
       return { fen, topMoves, bestEvalCp, source: 'stockfish' };
-    });
+    }, signal);
 
     cache.set(key, result);
     return result;
   }
 
-  async legalMoves(fen) {
+  async legalMoves(fen, signal) {
     if (!this.enabled) throw new Error('Stockfish is not available. Set STOCKFISH_BIN or build engine/Stockfish.');
     const key = `moves:${fen}`;
     if (cache.has(key)) return cache.get(key);
@@ -499,12 +405,12 @@ class EnginePool {
         if (m) out.push(m[1]);
       }
       return out;
-    });
+    }, signal);
     cache.set(key, moves);
     return moves;
   }
 
-  async evaluateMove(fen, move, movetime = 120) {
+  async evaluateMove(fen, move, movetime = 120, signal) {
     if (!this.enabled) throw new Error('Stockfish is not available. Set STOCKFISH_BIN or build engine/Stockfish.');
     return this.acquire().run(async (w) => {
       w.send('setoption name MultiPV value 1');
@@ -518,7 +424,7 @@ class EnginePool {
         if (m) score = m[1] === 'cp' ? Number(m[2]) : Number(m[2]) > 0 ? 100000 : -100000;
       }
       return score;
-    });
+    }, signal);
   }
 }
 
@@ -530,49 +436,62 @@ function sendJson(res, status, data) {
   res.end(JSON.stringify(data));
 }
 
-function parseBody(req, maxBytes = 10 * 1024 * 1024) {
+function parseBody(req, signal, maxBytes = 10 * 1024 * 1024) {
   return new Promise((resolve, reject) => {
     let raw = '';
     let bytes = 0;
-    let destroyed = false;
-
-    const onData = (d) => {
-      if (destroyed) return;
-      bytes += d.length;
+    const cleanup = () => {
+      req.removeListener('data', onData);
+      req.removeListener('end', onEnd);
+      req.removeListener('error', fail);
+      signal.removeEventListener('abort', aborted);
+    };
+    const fail = (error) => { cleanup(); reject(error); };
+    const aborted = () => fail(signal.reason);
+    const onData = (data) => {
+      bytes += data.length;
       if (bytes > maxBytes) {
-        destroyed = true;
-        req.removeListener('data', onData);
-        req.removeListener('end', onEnd);
-        req.destroy();
-        reject(new Error('Request body too large'));
+        fail(new HttpError(413, 'Request body too large'));
+        req.resume();
         return;
       }
-      raw += d;
+      raw += data;
     };
-
     const onEnd = () => {
-      if (destroyed) return;
-      if (!raw) return resolve({});
-      try {
-        resolve(JSON.parse(raw));
-      } catch (_error) {
-        reject(new HttpError(400, 'Request body must be valid JSON.'));
-      }
+      cleanup();
+      try { resolve(raw ? JSON.parse(raw) : {}); }
+      catch { reject(new HttpError(400, 'Request body must be valid JSON.')); }
     };
-
     req.on('data', onData);
     req.on('end', onEnd);
+    req.on('error', fail);
+    signal.addEventListener('abort', aborted, { once: true });
+    if (signal.aborted) aborted();
   });
 }
 
 // ── API Handler ──
 async function handleApi(req, res) {
-  // CORS headers for development
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  const controller = new AbortController();
+  const signal = controller.signal;
+  const cancel = () => controller.abort(new Error('Request cancelled'));
+  res.on('close', cancel);
+  const deadline = setTimeout(() => controller.abort(new Error('Request deadline exceeded')), 120000);
+  const origin = req.headers.origin;
+  const allowedOrigins = new Set([`http://127.0.0.1:${PORT}`, `http://localhost:${PORT}`]);
+  const allowed = !origin || allowedOrigins.has(origin) || /^chrome-extension:\/\/[a-p]{32}$/.test(origin);
+  if (!allowed) {
+    clearTimeout(deadline);
+    return sendJson(res, 403, { error: 'Origin not allowed.' });
+  }
+  if (origin) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+  }
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-
   if (req.method === 'OPTIONS') {
+    clearTimeout(deadline);
     res.writeHead(204);
     return res.end();
   }
@@ -581,13 +500,14 @@ async function handleApi(req, res) {
     // POST /api/analyze/position
     if (req.method === 'POST' && req.url === '/api/analyze/position') {
       if (!pool.enabled) return sendJson(res, 503, { error: 'Stockfish unavailable.' });
-      const body = await parseBody(req);
+      const body = await parseBody(req, signal);
       if (!body || typeof body !== 'object' || Array.isArray(body)) {
         throw new HttpError(400, 'Request body must be a JSON object.');
       }
       const fen = validateFen(body.fen);
       const result = await pool.analyzePosition({
         fen,
+        signal,
         depth: requireInteger(body.settings?.depth, { name: 'depth', defaultValue: 12, min: 1, max: 20 }),
         multipv: requireInteger(body.settings?.multiPv, { name: 'multiPv', defaultValue: 3, min: 1, max: 5 })
       });
@@ -596,7 +516,7 @@ async function handleApi(req, res) {
 
     // POST /api/analyze/all-moves (SSE streaming)
     if (req.method === 'POST' && req.url === '/api/analyze/all-moves') {
-      const body = await parseBody(req);
+      const body = await parseBody(req, signal);
       if (!pool.enabled) return sendJson(res, 503, { error: 'Stockfish unavailable.' });
       if (!body || typeof body !== 'object' || Array.isArray(body)) {
         throw new HttpError(400, 'Request body must be a JSON object.');
@@ -609,7 +529,7 @@ async function handleApi(req, res) {
         min: 20,
         max: 1000
       });
-      const legal = await pool.legalMoves(fen);
+      const legal = await pool.legalMoves(fen, signal);
 
       res.writeHead(200, {
         'Content-Type': 'text/event-stream; charset=utf-8',
@@ -624,7 +544,7 @@ async function handleApi(req, res) {
       for (let i = 0; i < legal.length; i += 1) {
         if (clientDisconnected) return;
         const move = legal[i];
-        const evalCp = await pool.evaluateMove(fen, move, movetime);
+        const evalCp = await pool.evaluateMove(fen, move, movetime, signal);
         // Negate eval since it's from opponent's perspective after the move
         const row = { uci: move, evalCp: -evalCp };
         rows.push(row);
@@ -645,7 +565,7 @@ async function handleApi(req, res) {
     // POST /api/analyze/game
     if (req.method === 'POST' && req.url === '/api/analyze/game') {
       if (!pool.enabled) return sendJson(res, 503, { error: 'Stockfish unavailable.' });
-      const body = await parseBody(req);
+      const body = await parseBody(req, signal);
       if (!body || typeof body !== 'object' || Array.isArray(body)) {
         throw new HttpError(400, 'Request body must be a JSON object.');
       }
@@ -669,11 +589,13 @@ async function handleApi(req, res) {
 
       const plies = [];
       for (let i = 0; i < normalizedFens.length; i += 1) {
+        signal.throwIfAborted();
         const fen = normalizedFens[i];
         const postMoveAnalysis = await pool.analyzePosition({
           fen,
           depth,
-          multipv: 1
+          multipv: 1,
+          signal
         });
         const evalAfterMove = postMoveAnalysis.bestEvalCp;
 
@@ -682,7 +604,8 @@ async function handleApi(req, res) {
           const preMoveAnalysis = await pool.analyzePosition({
             fen: normalizedPreFens[i],
             depth,
-            multipv: 1
+            multipv: 1,
+            signal
           });
           const bestBeforeMove = preMoveAnalysis.bestEvalCp;
           deltaCp = Math.max(0, bestBeforeMove + evalAfterMove);
@@ -729,15 +652,24 @@ async function handleApi(req, res) {
 
     return sendJson(res, 404, { error: 'Not found' });
   } catch (error) {
+    if (res.destroyed) return;
+    if (res.headersSent) {
+      res.write(`data: ${JSON.stringify({ type: 'error', error: error.message })}\n\n`);
+      return res.end();
+    }
     const status = error.statusCode || 500;
     if (status >= 500) console.error('API error:', error.message);
     return sendJson(res, status, { error: error.message || 'Request failed.' });
+  } finally {
+    clearTimeout(deadline);
+    res.removeListener('close', cancel);
   }
 }
 
 // ── Static File Server ──
 function serveStatic(req, res) {
-  const reqPath = req.url === '/' ? '/index.html' : req.url.split('?')[0];
+  const pathname = req.url.split('?')[0];
+  const reqPath = pathname === '/' ? '/index.html' : pathname;
 
   let decoded;
   try {
@@ -791,9 +723,19 @@ function serveStatic(req, res) {
 }
 
 // ── Server ──
-http.createServer((req, res) => {
+const server = http.createServer((req, res) => {
+  const host = req.headers.host;
+  if (![ `127.0.0.1:${PORT}`, `localhost:${PORT}` ].includes(host)) return sendJson(res, 403, { error: 'Host not allowed.' });
   if (req.url.startsWith('/api/')) return handleApi(req, res);
   return serveStatic(req, res);
-}).listen(PORT, () => {
+}).listen(PORT, '127.0.0.1', () => {
   console.log(`PawnForge running at http://localhost:${PORT} | stockfish=${pool.enabled ? 'on' : 'off'} | workers=${pool.size}`);
 });
+
+for (const signal of ['SIGTERM', 'SIGINT']) {
+  process.once(signal, () => {
+    for (const worker of pool.workers) worker.stop();
+    server.close();
+    server.closeAllConnections();
+  });
+}

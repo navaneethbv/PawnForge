@@ -35,9 +35,12 @@ PawnForge is a full-stack, anonymous chess analysis web app with a self-hosted S
 |------------|------------|--------|
 | Best       | 0-20       | Blue   |
 | Good       | 20-60      | Green  |
-| Inaccuracy | 60-150     | Orange |
-| Mistake    | 150-300    | Red    |
+| Inaccuracy | 60-150     | Amber  |
+| Mistake    | 150-300    | Orange-red |
 | Blunder    | >300       | Red    |
+
+Evaluations are clamped to ±10 pawns before computing the loss, so a missed or allowed mate cannot dominate ACPL.
+Mate scores are encoded as `±(100000 - N)` centipawns for mate in N, and the UI shows them as `#N`.
 
 ## Architecture
 
@@ -62,7 +65,7 @@ Node.js HTTP Server (server.js)
 | `/api/analyze/position` | POST | Analyze position with MultiPV |
 | `/api/analyze/all-moves` | POST | Stream eval for every legal move (SSE) |
 | `/api/analyze/game` | POST | Full game review from PGN |
-| `/api/opening` | GET | Detect opening by move sequence |
+| `/api/opening` | GET | Detect opening by move sequence (`moves`, optional `fen` for custom starts) |
 | `/api/status` | GET | Engine and server status |
 
 ## How to Run
@@ -177,13 +180,15 @@ curl "http://localhost:4173/api/opening?moves=e4+e5+Nf3+Nc6+Bb5"
 
 ### Testing in the Browser
 
-1. **Analyze tab** - The board loads at the starting position. Drag pieces to make moves, then click "Analyze Position" to see engine evaluation with PV lines.
+1. **Analyze tab** - The board loads at the starting position. Drag pieces to make moves, then click "Analyze position" to see the evaluation and principal variations in SAN. Click a line to play its first move.
 
-2. **Game Review tab** - Paste a PGN (e.g. from lichess or chess.com), click "Analyze Game". The eval graph renders and you can step through moves with arrow keys or by clicking the graph.
+2. **Game Review tab** - Paste a PGN (e.g. from lichess or chess.com), click "Review game". The summary, eval graph, and color-coded move list render; step through moves with the arrow keys or by clicking the graph.
 
-3. **Move Explorer tab** - Click "Run All-Moves Explorer" to evaluate every legal move in the current position. Watch the streaming progress bar, then inspect piece badges and the ranked move table.
+3. **Move Explorer tab** - Click "Evaluate all moves" to evaluate every legal move in the current position. Watch the streaming progress bar, then filter by piece with the piece cards and inspect the ranked move table.
 
-4. **Openings tab** - Play a few opening moves on the board, then click "Detect Opening" to see the ECO code, name, and suggested continuations.
+4. **Openings tab** - Play a few opening moves on the board, then click "Detect opening" to see the ECO code, name, and book continuations. Click a continuation to play it.
+
+Keyboard shortcuts: `←`/`→`/`Home`/`End` navigate, `F` flips the board, `Z` undoes (taking back the engine reply when playing against it), `H` toggles the coach, and `Space` plays the coach's move.
 
 ### Chrome Coach Overlay
 
@@ -206,7 +211,7 @@ The `macos/` Swift package provides a menu bar launcher for the local PawnForge 
 It starts and stops Node.js, opens the web app, and opens Chrome's extension manager.
 Chrome remains responsible for reading the active page and drawing the overlay through its extension permission model.
 
-Run it from the repository with `swift run --package-path macos -- --repo /Users/navaneethbv/Desktop/Projects/PawnForge`.
+Run it from the repository with `swift run --package-path macos -- --repo "$PWD"`.
 
 ### Troubleshooting
 
@@ -227,6 +232,7 @@ Disconnected clients cancel their queued or active work, and each API request ha
 Streaming failures are sent as SSE error events.
 Shutdown terminates the engine children.
 An LRU cache holds up to 500 results for one hour.
+Game review analyzes each distinct position once and spreads the work across the engine pool.
 
 The server listens only on `127.0.0.1` and accepts local Host headers.
 Browser API requests are restricted to the local app origins and Chrome extension origins.
@@ -252,6 +258,7 @@ swift build --package-path macos # macOS only
 Browser tests require an installed or built Stockfish binary and reserve port 4189.
 They serve pinned test copies of the frontend libraries so the tests do not depend on CDN availability.
 The application still loads those libraries from CDNs.
+Unit tests cover FEN validation, mate-score encoding, loss clamping, opening detection, and bounded concurrency in `chess-analysis.js`.
 Worker tests use a controlled UCI process to exercise crashes, continuous-output timeouts, cancellation, and overload.
 Browser tests cover FEN loading, illegal drags, history, stale sparring/review responses, custom-position summaries, API access restrictions, and real-engine analysis/explorer results.
 GitHub Actions runs JavaScript lint and syntax checks, Manifest V3 asset validation, workflow validation, Node 22/24 tests, real-engine browser and extension tests, dependency auditing/review, and a Swift build with warnings treated as errors.

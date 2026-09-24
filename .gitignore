@@ -16,3 +16,6 @@ Thumbs.db
 # Browser test output
 test-results/
 playwright-report/
+
+# CodeQL local analysis artifacts
+_codeql_detected_source_root

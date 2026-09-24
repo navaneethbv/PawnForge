@@ -10,6 +10,7 @@ async function load(page) {
   await expect(page.locator('#board img')).toHaveCount(32);
 }
 async function drag(page, from, to) {
+  await page.locator('#board').evaluate(el => el.scrollIntoView({ block: 'center' }));
   const a = await page.locator(`#board .square-${from}`).boundingBox();
   const b = await page.locator(`#board .square-${to}`).boundingBox();
   await page.mouse.move(a.x + a.width / 2, a.y + a.height / 2);
@@ -161,4 +162,39 @@ test('overlay polling does not discard an analysis slower than its poll interval
   await page.addScriptTag({ content: await readFile('overlay.js', 'utf8') });
   await expect(page.locator('#pawnforge-hud-candidates button').first()).toBeVisible();
   expect(requests).toBe(1);
+});
+
+test('undo takes back the engine reply in sparring and never wipes history from the start position', async ({ page }) => {
+  await load(page);
+  await page.route('**/api/analyze/position', route => route.fulfill({ json: { topMoves: [{ uci: 'e7e5', evalCp: 0, pv: 'e7e5' }], bestEvalCp: 0 } }));
+  await page.locator('.sparring-toggle-label').click();
+  await drag(page, 'e2', 'e4');
+  await expect(page.locator('#moveList .move-san')).toHaveText(['e4', 'e5']);
+  await page.locator('#undoBtn').click();
+  await expect(page.locator('#fenInput')).toHaveValue(start);
+  await expect(page.locator('#moveList .move-san')).toHaveCount(0);
+
+  await page.locator('.sparring-toggle-label').click();
+  await expect(page.locator('#sparringToggle')).not.toBeChecked();
+  await expect(page.locator('#board .square-e2 img')).toHaveCount(1); // undo animation finished
+  await expect(page.locator('#board .square-e5 img')).toHaveCount(0);
+  await drag(page, 'e2', 'e4');
+  await expect(page.locator('#moveList .move-san')).toHaveText(['e4']);
+  await page.locator('#moveNavStart').click();
+  await page.locator('#undoBtn').click();
+  await expect(page.locator('#moveList .move-san')).toHaveText(['e4']);
+});
+
+test('a FEN without move counters is normalised before numbering moves', async ({ page }) => {
+  await load(page);
+  await page.locator('#fenInput').fill('rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq');
+  await page.locator('#fenInput').press('Enter');
+  await expect(page.locator('#fenInput')).toHaveValue(afterE4);
+  await drag(page, 'e7', 'e5');
+  await expect(page.locator('#moveList')).toContainText('1...');
+  await expect(page.locator('#moveList')).not.toContainText('NaN');
+  await page.locator('#fenInput').fill('not a fen');
+  await page.locator('#loadFenBtn').click();
+  await expect(page.locator('#fenError')).toBeVisible();
+  await expect(page.locator('#board .square-e5 img')).toHaveCount(1);
 });

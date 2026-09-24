@@ -3,143 +3,210 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>PawnForge - Chess Analysis</title>
+    <meta name="color-scheme" content="dark" />
+    <meta name="description" content="PawnForge: local Stockfish chess analysis, game review, and move exploration." />
+    <title>PawnForge · Chess Analysis</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%233b82f6'/%3E%3Ctext x='16' y='24' text-anchor='middle' font-size='22' fill='white'%3E%E2%99%9F%EF%B8%8E%3C/text%3E%3C/svg%3E" />
     <link rel="stylesheet" href="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css" integrity="sha384-q94+BZtLrkL1/ohfjR8c6L+A6qzNH9R2hBLwyoAfu3i/WCvQjzL2RQJ3uNHDISdU" crossorigin="anonymous" />
     <link rel="stylesheet" href="/src/styles.css" />
   </head>
   <body>
+    <svg class="icon-sprite" aria-hidden="true" focusable="false">
+      <symbol id="i-analyze" viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2" /></symbol>
+      <symbol id="i-review" viewBox="0 0 24 24"><path d="M3 3v18h18" /><path d="m7 15 4-4 3 3 5-6" /></symbol>
+      <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5" /><rect x="14" y="3" width="7" height="7" rx="1.5" /><rect x="3" y="14" width="7" height="7" rx="1.5" /><rect x="14" y="14" width="7" height="7" rx="1.5" /></symbol>
+      <symbol id="i-book" viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V3H6.5A2.5 2.5 0 0 0 4 5.5z" /><path d="M4 19.5A2.5 2.5 0 0 0 6.5 22H20v-5" /></symbol>
+      <symbol id="i-flip" viewBox="0 0 24 24"><path d="M7 20V4M3 8l4-4 4 4M17 4v16M13 16l4 4 4-4" /></symbol>
+      <symbol id="i-reset" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 2.64-6.36L3 8" /><path d="M3 3v5h5" /></symbol>
+      <symbol id="i-undo" viewBox="0 0 24 24"><path d="M9 14 4 9l5-5" /><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11" /></symbol>
+      <symbol id="i-sound" viewBox="0 0 24 24"><path d="M11 5 6 9H2v6h4l5 4z" /><path d="M15.5 8.5a5 5 0 0 1 0 7M19 5a10 10 0 0 1 0 14" /></symbol>
+      <symbol id="i-mute" viewBox="0 0 24 24"><path d="M11 5 6 9H2v6h4l5 4z" /><path d="m22 9-6 6M16 9l6 6" /></symbol>
+      <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="12" height="12" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></symbol>
+      <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5" /></symbol>
+      <symbol id="i-first" viewBox="0 0 24 24"><path d="m11 17-5-5 5-5M18 17l-5-5 5-5" /></symbol>
+      <symbol id="i-prev" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6" /></symbol>
+      <symbol id="i-next" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6" /></symbol>
+      <symbol id="i-last" viewBox="0 0 24 24"><path d="m13 17 5-5-5-5M6 17l5-5-5-5" /></symbol>
+      <symbol id="i-play" viewBox="0 0 24 24"><path d="M7 4.5v15l12-7.5z" fill="currentColor" /></symbol>
+      <symbol id="i-bulb" viewBox="0 0 24 24"><path d="M9 18h6M10 22h4" /><path d="M12 2a7 7 0 0 0-4 12.74V16h8v-1.26A7 7 0 0 0 12 2z" /></symbol>
+      <symbol id="i-cpu" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2" /><rect x="9" y="9" width="6" height="6" /><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3" /></symbol>
+    </svg>
+
     <div id="app">
       <header class="topbar">
-        <div class="topbar-left">
-          <h1><span class="logo-icon">&#9823;</span> PawnForge</h1>
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">&#9822;&#xFE0E;</span>
+          <span class="brand-name">PawnForge</span>
+          <span class="brand-tag">Stockfish analysis</span>
         </div>
-        <nav class="topbar-nav">
-          <button class="tab-btn active" data-tab="analyze">Analyze</button>
-          <button class="tab-btn" data-tab="game-review">Game Review</button>
-          <button class="tab-btn" data-tab="explorer">Move Explorer</button>
-          <button class="tab-btn" data-tab="opening">Openings</button>
+        <nav class="topbar-nav" role="tablist" aria-label="Analysis tools">
+          <button class="tab-btn active" type="button" role="tab" aria-selected="true" aria-controls="tab-analyze" data-tab="analyze">
+            <svg class="icon" aria-hidden="true"><use href="#i-analyze" /></svg><span>Analyze</span>
+          </button>
+          <button class="tab-btn" type="button" role="tab" aria-selected="false" aria-controls="tab-game-review" data-tab="game-review">
+            <svg class="icon" aria-hidden="true"><use href="#i-review" /></svg><span>Game Review</span>
+          </button>
+          <button class="tab-btn" type="button" role="tab" aria-selected="false" aria-controls="tab-explorer" data-tab="explorer">
+            <svg class="icon" aria-hidden="true"><use href="#i-grid" /></svg><span>Move Explorer</span>
+          </button>
+          <button class="tab-btn" type="button" role="tab" aria-selected="false" aria-controls="tab-opening" data-tab="opening">
+            <svg class="icon" aria-hidden="true"><use href="#i-book" /></svg><span>Openings</span>
+          </button>
         </nav>
-        <div class="topbar-right">
-          <span id="engineStatus" class="engine-indicator">
-            <span class="dot"></span> Engine idle
-          </span>
+        <div id="engineStatus" class="engine-indicator" role="status" aria-live="polite">
+          <span class="dot"></span><span class="engine-text">Ready</span>
         </div>
       </header>
 
       <main class="layout">
-        <!-- Left: Board Panel -->
-        <section class="panel board-panel">
-          <div class="board-wrapper">
-            <div id="evalBar" class="eval-bar">
-              <div class="eval-bar-track">
-                <div id="evalBarSegTop" class="eval-bar-segment eval-bar-segment-top" style="background:var(--black-eval); transform: scaleY(0.5); transform-origin: top;"></div>
-                <div id="evalBarSegBot" class="eval-bar-segment eval-bar-segment-bottom" style="background:var(--white-eval); transform: scaleY(0.5); transform-origin: bottom;"></div>
+        <!-- Board column -->
+        <section class="board-column" aria-label="Board">
+          <div class="card board-card">
+            <div class="board-wrapper">
+              <div id="evalBar" class="eval-bar" aria-hidden="true">
+                <div id="evalBarFill" class="eval-bar-fill"></div>
                 <div class="eval-bar-center-line"></div>
+                <span id="evalBarLabel" class="eval-bar-label">0.0</span>
               </div>
-              <span id="evalBarLabel" class="eval-bar-label">0.0</span>
-            </div>
-            <div class="board-container">
-              <div id="board"></div>
-              <div id="boardBadgeOverlay" class="board-badge-overlay"></div>
-              <div id="boardSquareHighlights" class="board-square-highlights"></div>
-              <svg id="boardArrowOverlay" class="board-arrow-overlay" viewBox="0 0 100 100" preserveAspectRatio="none">
-                <defs>
-                  <marker id="coachArrowHead" markerWidth="4" markerHeight="4" refX="2.5" refY="2" orient="auto">
-                    <polygon points="0 0, 4 2, 0 4" fill="#22c55e" />
-                  </marker>
-                  <marker id="coachArrowHeadSecondary" markerWidth="4" markerHeight="4" refX="2.5" refY="2" orient="auto">
-                    <polygon points="0 0, 4 2, 0 4" fill="#3b82f6" />
-                  </marker>
-                  <marker id="coachArrowHeadTertiary" markerWidth="4" markerHeight="4" refX="2.5" refY="2" orient="auto">
-                    <polygon points="0 0, 4 2, 0 4" fill="#f59e0b" />
-                  </marker>
-                </defs>
-              </svg>
-            </div>
-          </div>
-
-          <div id="evalInfo" class="eval-info">
-            <span id="evalDisplay" class="eval-display">0.00</span>
-            <span class="eval-wdl" title="Estimated win/draw/loss probability (heuristic)">
-              W <span id="wdlW">50.0</span>%
-              D <span id="wdlD">0.0</span>%
-              L <span id="wdlL">50.0</span>%
-              <span class="wdl-est">(est.)</span>
-            </span>
-          </div>
-
-          <div class="board-controls">
-            <button id="flipBtn" title="Flip board (Hotkey: F)">&#8693; Flip</button>
-            <button id="resetBtn" title="Reset to start">&#8635; Reset</button>
-            <button id="undoBtn" title="Undo last move (Hotkey: Z)">&#9664; Undo</button>
-            <button id="soundToggleBtn" class="icon-btn" title="Toggle Move Sounds">&#128266;</button>
-            <label class="coach-toggle-label" title="Toggle Move Coach hints (Hotkey: H)">
-              <span class="coach-label-text">&#127919; Coach</span>
-              <input type="checkbox" id="coachToggle" />
-              <span class="coach-slider"></span>
-            </label>
-          </div>
-
-          <div id="coachCard" class="coach-card" style="display: none;">
-            <div class="coach-header">
-              <div class="coach-title">
-                <span class="coach-icon">&#128161;</span>
-                <span id="coachStatusText">Coach: Thinking...</span>
+              <div class="board-container">
+                <div id="board"></div>
+                <div id="boardSquareHighlights" class="board-overlay board-square-highlights"></div>
+                <div id="boardBadgeOverlay" class="board-overlay board-badge-overlay"></div>
+                <svg id="boardArrowOverlay" class="board-overlay board-arrow-overlay" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+                  <defs>
+                    <marker id="coachArrowHead" markerWidth="4" markerHeight="4" refX="2.5" refY="2" orient="auto">
+                      <polygon points="0 0, 4 2, 0 4" fill="#22c55e" />
+                    </marker>
+                    <marker id="coachArrowHeadSecondary" markerWidth="4" markerHeight="4" refX="2.5" refY="2" orient="auto">
+                      <polygon points="0 0, 4 2, 0 4" fill="#3b82f6" />
+                    </marker>
+                    <marker id="coachArrowHeadTertiary" markerWidth="4" markerHeight="4" refX="2.5" refY="2" orient="auto">
+                      <polygon points="0 0, 4 2, 0 4" fill="#f59e0b" />
+                    </marker>
+                  </defs>
+                </svg>
               </div>
-              <button id="applyCoachMoveBtn" class="coach-apply-btn" title="Play recommended move (Hotkey: Space)">&#9654; Play Move</button>
             </div>
-            <div class="coach-body">
-              <div id="coachMoveDetail" class="coach-move-detail">Calculating next move...</div>
-              <div id="coachCandidates" class="coach-candidates-list"></div>
+
+            <div id="evalInfo" class="eval-info">
+              <span id="evalDisplay" class="eval-display" title="Evaluation from White's perspective">+0.00</span>
+              <div class="eval-wdl" title="Estimated win/draw/loss for White (heuristic, not engine WDL)">
+                <div class="wdl-bar" aria-hidden="true">
+                  <span id="wdlBarW" class="wdl-seg wdl-w"></span><span id="wdlBarD" class="wdl-seg wdl-d"></span><span id="wdlBarL" class="wdl-seg wdl-l"></span>
+                </div>
+                <div class="wdl-legend">
+                  W <span id="wdlW">25.0</span>% · D <span id="wdlD">50.0</span>% · L <span id="wdlL">25.0</span>%
+                  <span class="wdl-est">est.</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="board-controls">
+              <button id="flipBtn" class="btn" type="button" title="Flip board (F)">
+                <svg class="icon" aria-hidden="true"><use href="#i-flip" /></svg><span>Flip</span>
+              </button>
+              <button id="resetBtn" class="btn" type="button" title="Reset to the starting position">
+                <svg class="icon" aria-hidden="true"><use href="#i-reset" /></svg><span>Reset</span>
+              </button>
+              <button id="undoBtn" class="btn" type="button" title="Undo last move (Z)">
+                <svg class="icon" aria-hidden="true"><use href="#i-undo" /></svg><span>Undo</span>
+              </button>
+              <button id="soundToggleBtn" class="btn btn-icon" type="button" title="Mute sounds" aria-label="Mute sounds" aria-pressed="false">
+                <svg class="icon" aria-hidden="true"><use href="#i-sound" /></svg>
+              </button>
             </div>
           </div>
 
-          <!-- Sparring / Play vs Computer bar -->
-          <div class="sparring-row">
-            <label class="sparring-toggle-label" title="Play sparring game against Stockfish 19">
-              <input type="checkbox" id="sparringToggle" />
-              <span class="coach-slider"></span>
-              <span class="sparring-label-text">&#9881; Play vs Engine</span>
-            </label>
-            <select id="sparringColor" title="Your side">
-              <option value="w" selected>You: White</option>
-              <option value="b">You: Black</option>
-            </select>
-            <select id="sparringLevel" title="Engine difficulty">
-              <option value="8">Casual (Depth 8)</option>
-              <option value="12" selected>Club (Depth 12)</option>
-              <option value="16">Master (Depth 16)</option>
-            </select>
-          </div>
-
-          <div class="fen-row">
-            <input type="text" id="fenInput" placeholder="Paste FEN here..." />
-            <button id="loadFenBtn">Load</button>
-            <button id="copyFenBtn" title="Copy FEN">&#128203;</button>
-          </div>
-
-          <div class="move-list-container">
-            <div class="move-list-header">
+          <div class="card move-list-container">
+            <div class="card-header move-list-header">
               <h3>Moves</h3>
               <div class="move-nav-controls">
-                <button id="moveNavStart" title="Start position (Home)">&#9198;</button>
-                <button id="moveNavPrev" title="Previous move (Left arrow)">&#9664;</button>
-                <button id="moveNavNext" title="Next move (Right arrow)">&#9654;</button>
-                <button id="moveNavEnd" title="Current move (End)">&#9197;</button>
+                <button id="moveNavStart" class="btn btn-icon btn-sm" type="button" title="Start position (Home)" aria-label="Start position"><svg class="icon" aria-hidden="true"><use href="#i-first" /></svg></button>
+                <button id="moveNavPrev" class="btn btn-icon btn-sm" type="button" title="Previous move (←)" aria-label="Previous move"><svg class="icon" aria-hidden="true"><use href="#i-prev" /></svg></button>
+                <button id="moveNavNext" class="btn btn-icon btn-sm" type="button" title="Next move (→)" aria-label="Next move"><svg class="icon" aria-hidden="true"><use href="#i-next" /></svg></button>
+                <button id="moveNavEnd" class="btn btn-icon btn-sm" type="button" title="Latest move (End)" aria-label="Latest move"><svg class="icon" aria-hidden="true"><use href="#i-last" /></svg></button>
               </div>
             </div>
-            <div id="moveList" class="move-list"></div>
+            <div id="moveList" class="move-list" data-empty="No moves yet. Drag a piece to start."></div>
+          </div>
+
+          <div class="card assist-card">
+            <label class="switch-row coach-toggle-label" title="Show the engine's top three moves (H)">
+              <span class="switch-icon" aria-hidden="true"><svg class="icon"><use href="#i-bulb" /></svg></span>
+              <span class="switch-text">
+                <span class="coach-label-text">Coach hints</span>
+                <small>Arrows for the engine's top three moves</small>
+              </span>
+              <input type="checkbox" id="coachToggle" />
+              <span class="coach-slider" aria-hidden="true"></span>
+            </label>
+
+            <div id="coachCard" class="coach-card" hidden>
+              <div class="coach-header">
+                <span id="coachStatusText" class="coach-title">Thinking…</span>
+                <button id="applyCoachMoveBtn" class="btn btn-success btn-sm" type="button" title="Play recommended move (Space)" hidden>
+                  <svg class="icon" aria-hidden="true"><use href="#i-play" /></svg><span>Play move</span>
+                </button>
+              </div>
+              <div id="coachMoveDetail" class="coach-move-detail">Calculating the next move…</div>
+              <div id="coachCandidates" class="coach-candidates-list"></div>
+            </div>
+
+            <div class="assist-divider"></div>
+
+            <label class="switch-row sparring-toggle-label" title="Play a practice game against Stockfish">
+              <span class="switch-icon" aria-hidden="true"><svg class="icon"><use href="#i-cpu" /></svg></span>
+              <span class="switch-text">
+                <span class="sparring-label-text">Play vs engine</span>
+                <small>Stockfish answers your moves</small>
+              </span>
+              <input type="checkbox" id="sparringToggle" />
+              <span class="coach-slider" aria-hidden="true"></span>
+            </label>
+            <div class="sparring-row">
+              <label class="field">
+                <span class="field-label">Your side</span>
+                <select id="sparringColor">
+                  <option value="w" selected>White</option>
+                  <option value="b">Black</option>
+                </select>
+              </label>
+              <label class="field">
+                <span class="field-label">Strength</span>
+                <select id="sparringLevel">
+                  <option value="8">Casual · depth 8</option>
+                  <option value="12" selected>Club · depth 12</option>
+                  <option value="16">Master · depth 16</option>
+                </select>
+              </label>
+            </div>
+          </div>
+
+          <div class="card">
+            <label class="field-label" for="fenInput">Position (FEN)</label>
+            <div class="fen-row">
+              <input type="text" id="fenInput" placeholder="Paste a FEN and press Enter" autocomplete="off" spellcheck="false" aria-describedby="fenError" />
+              <button id="loadFenBtn" class="btn" type="button">Load</button>
+              <button id="copyFenBtn" class="btn btn-icon" type="button" title="Copy FEN" aria-label="Copy FEN">
+                <svg class="icon" aria-hidden="true"><use href="#i-copy" /></svg>
+              </button>
+            </div>
+            <p id="fenError" class="field-error" role="alert" hidden></p>
           </div>
         </section>
 
-        <!-- Center: Analysis content (tabs) -->
-        <section class="panel center-panel">
+        <!-- Workspace (tabs) -->
+        <section class="card workspace center-panel">
           <!-- Tab: Analyze -->
-          <div id="tab-analyze" class="tab-content active">
+          <div id="tab-analyze" class="tab-content active" role="tabpanel">
             <div class="section-header">
-              <h2>Position Analysis</h2>
+              <div>
+                <h2>Position analysis</h2>
+                <p class="section-subtitle">Multi-line Stockfish evaluation of the board. Click a line to play its first move.</p>
+              </div>
               <div class="inline-controls">
-                <label>Depth
+                <label class="field field-inline">
+                  <span class="field-label">Depth</span>
                   <select id="depthSelect">
                     <option>8</option>
                     <option>10</option>
@@ -149,105 +216,121 @@
                     <option>20</option>
                   </select>
                 </label>
-                <label>Lines
+                <label class="field field-inline">
+                  <span class="field-label">Lines</span>
                   <select id="multipvSelect">
                     <option>1</option>
                     <option selected>3</option>
                     <option>5</option>
                   </select>
                 </label>
+                <button id="analyzePositionBtn" class="btn btn-primary" type="button">
+                  <svg class="icon" aria-hidden="true"><use href="#i-analyze" /></svg><span>Analyze position</span>
+                </button>
               </div>
             </div>
-            <button id="analyzePositionBtn" class="btn-primary">&#9881; Analyze Position</button>
 
             <div id="topMovesContainer" class="top-moves-container">
-              <div class="placeholder-text">Click "Analyze Position" to see engine evaluation.</div>
+              <div class="placeholder-text">Run an analysis to see the engine's best lines for this position.</div>
             </div>
-
-            <div id="pvLines" class="pv-lines">
-              <!-- Filled dynamically -->
-            </div>
+            <div id="pvLines" class="pv-lines"></div>
           </div>
 
           <!-- Tab: Game Review -->
-          <div id="tab-game-review" class="tab-content">
+          <div id="tab-game-review" class="tab-content" role="tabpanel">
             <div class="section-header">
-              <h2>PGN Game Review</h2>
+              <div>
+                <h2>Game review</h2>
+                <p class="section-subtitle">Paste a PGN to classify every move and find the turning points.</p>
+              </div>
             </div>
-            <textarea id="pgnInput" rows="6" placeholder="Paste PGN here...&#10;&#10;1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 ..."></textarea>
+            <label class="field-label" for="pgnInput">PGN</label>
+            <textarea id="pgnInput" rows="5" spellcheck="false" placeholder="[Event &quot;Casual game&quot;]&#10;&#10;1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 …"></textarea>
             <div class="game-controls-row">
-              <button id="analyzeGameBtn" class="btn-primary">&#9881; Analyze Game</button>
-              <label>Depth
+              <label class="field field-inline">
+                <span class="field-label">Depth</span>
                 <select id="gameDepthSelect">
                   <option>8</option>
                   <option selected>10</option>
                   <option>12</option>
                 </select>
               </label>
+              <button id="analyzeGameBtn" class="btn btn-primary" type="button">
+                <svg class="icon" aria-hidden="true"><use href="#i-review" /></svg><span>Review game</span>
+              </button>
             </div>
-            <div id="gameProgress" class="game-progress" style="display:none;">
-              <div class="progress-bar"><div id="gameProgressFill" class="progress-fill"></div></div>
-              <span id="gameProgressText">Analyzing...</span>
-            </div>
-
-            <div id="evalGraphContainer" class="eval-graph-container" style="display:none;">
-              <h3>Evaluation Graph</h3>
-              <canvas id="evalGraph" width="700" height="180"></canvas>
+            <div id="gameProgress" class="game-progress" hidden>
+              <div class="progress-bar indeterminate"><div id="gameProgressFill" class="progress-fill"></div></div>
+              <span id="gameProgressText">Analyzing…</span>
             </div>
 
-            <div id="gameReviewNav" class="game-review-nav" style="display:none;">
-              <button id="navFirst" title="First move">&#9198;</button>
-              <button id="navPrev" title="Previous move">&#9664;</button>
-              <button id="navNext" title="Next move">&#9654;</button>
-              <button id="navLast" title="Last move">&#9197;</button>
-            </div>
-
-            <div id="gameMoveList" class="game-move-list"></div>
-
-            <div id="gameSummary" class="game-summary" style="display:none;">
-              <h3>Game Summary</h3>
+            <div id="gameSummary" class="game-summary" hidden>
               <div id="gameSummaryContent"></div>
             </div>
+
+            <div id="evalGraphContainer" class="eval-graph-container" hidden>
+              <div class="subsection-header">
+                <h3>Evaluation</h3>
+                <div id="gameReviewNav" class="game-review-nav">
+                  <button id="navFirst" class="btn btn-icon btn-sm" type="button" title="First move" aria-label="First move"><svg class="icon" aria-hidden="true"><use href="#i-first" /></svg></button>
+                  <button id="navPrev" class="btn btn-icon btn-sm" type="button" title="Previous move (←)" aria-label="Previous move"><svg class="icon" aria-hidden="true"><use href="#i-prev" /></svg></button>
+                  <button id="navNext" class="btn btn-icon btn-sm" type="button" title="Next move (→)" aria-label="Next move"><svg class="icon" aria-hidden="true"><use href="#i-next" /></svg></button>
+                  <button id="navLast" class="btn btn-icon btn-sm" type="button" title="Last move" aria-label="Last move"><svg class="icon" aria-hidden="true"><use href="#i-last" /></svg></button>
+                </div>
+              </div>
+              <canvas id="evalGraph" width="700" height="180" aria-label="Evaluation graph. Click to jump to a move."></canvas>
+            </div>
+
+            <div id="gameMoveList" class="game-move-list" hidden></div>
           </div>
 
           <!-- Tab: Move Explorer -->
-          <div id="tab-explorer" class="tab-content">
+          <div id="tab-explorer" class="tab-content" role="tabpanel">
             <div class="section-header">
-              <h2>Evaluate Every Legal Move</h2>
+              <div>
+                <h2>Move explorer</h2>
+                <p class="section-subtitle">Evaluate every legal move. Scores appear on the destination squares.</p>
+              </div>
               <div class="inline-controls">
-                <label>Time/move (ms)
+                <label class="field field-inline">
+                  <span class="field-label">Time per move</span>
                   <select id="movetimeSelect">
-                    <option>50</option>
-                    <option>80</option>
-                    <option selected>120</option>
-                    <option>250</option>
-                    <option>500</option>
+                    <option value="50">50 ms</option>
+                    <option value="80">80 ms</option>
+                    <option value="120" selected>120 ms</option>
+                    <option value="250">250 ms</option>
+                    <option value="500">500 ms</option>
                   </select>
                 </label>
+                <button id="analyzeAllMovesBtn" class="btn btn-primary" type="button">
+                  <svg class="icon" aria-hidden="true"><use href="#i-grid" /></svg><span>Evaluate all moves</span>
+                </button>
               </div>
             </div>
-            <button id="analyzeAllMovesBtn" class="btn-primary">&#9881; Run All-Moves Explorer</button>
 
-            <div id="explorerProgress" class="game-progress" style="display:none;">
+            <div id="explorerProgress" class="game-progress" hidden>
               <div class="progress-bar"><div id="explorerProgressFill" class="progress-fill"></div></div>
-              <span id="explorerProgressText">Evaluating moves...</span>
+              <span id="explorerProgressText">Evaluating moves…</span>
             </div>
 
+            <div id="explorerEmpty" class="placeholder-text">Run the explorer to rank every legal move in this position.</div>
             <div id="pieceBadges" class="badge-grid"></div>
 
-            <div class="explorer-filters" style="display:none;" id="explorerFilters">
-              <label>Filter:
+            <div class="explorer-filters" id="explorerFilters" hidden>
+              <label class="field field-inline">
+                <span class="field-label">Show</span>
                 <select id="filterPiece">
                   <option value="">All moves</option>
                   <option value="captures">Captures</option>
                   <option value="checks">Checks</option>
                 </select>
               </label>
-              <label>Sort:
+              <label class="field field-inline">
+                <span class="field-label">Sort</span>
                 <select id="sortMoves">
-                  <option value="eval">By Evaluation</option>
-                  <option value="delta">By Delta from Best</option>
-                  <option value="piece">By Piece</option>
+                  <option value="eval">Evaluation</option>
+                  <option value="delta">Loss vs best</option>
+                  <option value="piece">Piece</option>
                 </select>
               </label>
             </div>
@@ -256,18 +339,33 @@
           </div>
 
           <!-- Tab: Opening -->
-          <div id="tab-opening" class="tab-content">
+          <div id="tab-opening" class="tab-content" role="tabpanel">
             <div class="section-header">
-              <h2>Opening Discovery</h2>
+              <div>
+                <h2>Opening explorer</h2>
+                <p class="section-subtitle">Identify the opening played on the board and browse book continuations.</p>
+              </div>
+              <div class="inline-controls">
+                <button id="openingBtn" class="btn btn-primary" type="button">
+                  <svg class="icon" aria-hidden="true"><use href="#i-book" /></svg><span>Detect opening</span>
+                </button>
+              </div>
             </div>
-            <button id="openingBtn" class="btn-primary">&#128214; Detect Opening</button>
             <div id="openingResult" class="opening-result">
-              <div class="placeholder-text">Play some moves or load a FEN, then click to detect the opening.</div>
+              <div class="placeholder-text">Play some moves from the starting position, then detect the opening.</div>
             </div>
             <div id="openingContinuations" class="opening-continuations"></div>
           </div>
         </section>
       </main>
+
+      <footer class="app-footer">
+        <span><kbd>←</kbd> <kbd>→</kbd> navigate</span>
+        <span><kbd>F</kbd> flip</span>
+        <span><kbd>Z</kbd> undo</span>
+        <span><kbd>H</kbd> coach</span>
+        <span><kbd>Space</kbd> play hint</span>
+      </footer>
     </div>
 
     <script src="https://code.jquery.com/jquery-3.7.1.min.js" integrity="sha384-1H217gwSVyLSIfaLxHbE7dRb3v4mYCKbpQvzx0cegeju1MVsGrX5xXxAvs/HgeFs" crossorigin="anonymous"></script>

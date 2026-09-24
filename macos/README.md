@@ -7,7 +7,7 @@ It does not read browser pages directly, which keeps page access scoped to the C
 ## Run from the repository
 
 ```bash
-swift run --package-path macos -- --repo /Users/navaneethbv/Desktop/Projects/PawnForge
+swift run --package-path macos -- --repo "$PWD"
 ```
 
 When launched from the repository directory, `--repo` can be omitted.

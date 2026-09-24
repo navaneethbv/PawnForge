@@ -7,7 +7,7 @@ The repository root is a Manifest V3 Chrome extension as well as the PawnForge w
 1. Start the local PawnForge server with `npm start`.
 2. Open `chrome://extensions` in Google Chrome.
 3. Enable **Developer mode**.
-4. Choose **Load unpacked** and select the repository root, `/Users/navaneethbv/Desktop/Projects/PawnForge`.
+4. Choose **Load unpacked** and select the repository root (the folder containing `manifest.json`).
 5. Open a chess site and use the PawnForge Coach panel or the extension toolbar button.
 
 The extension background worker calls `http://127.0.0.1:4173` by default.

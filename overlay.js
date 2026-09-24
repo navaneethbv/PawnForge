@@ -557,6 +557,8 @@
   function formatEvaluation(value) {
     const score = Number(value);
     if (!Number.isFinite(score)) return 'engine';
+    // The server encodes mate in N as ±(100000 - N) from the mover's view.
+    if (Math.abs(score) >= 99000) return `${score > 0 ? '' : '-'}#${100000 - Math.abs(score) || ''}`;
     const formatted = (score / 100).toFixed(2);
     return score >= 0 ? `+${formatted}` : formatted;
   }

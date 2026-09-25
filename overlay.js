@@ -740,17 +740,20 @@
     }
   }
 
+  // Settings the user changes before storage finishes loading must not be overwritten by it.
+  const editedSettings = new Set();
+
   async function loadSettings() {
     if (!extensionStorage) return;
     try {
       const stored = await extensionStorage.get(['endpoint', 'sideMode']);
-      if (typeof stored.endpoint === 'string') {
+      if (typeof stored.endpoint === 'string' && !editedSettings.has('endpoint')) {
         const url = new URL(stored.endpoint);
         if (url.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(url.hostname) && !url.username && !url.password && url.pathname === '/api/analyze/position') endpoint = url.toString();
       }
-      if (stored.sideMode === 'w' || stored.sideMode === 'b' || stored.sideMode === 'auto') sideMode = stored.sideMode;
+      if (!editedSettings.has('sideMode') && (stored.sideMode === 'w' || stored.sideMode === 'b' || stored.sideMode === 'auto')) sideMode = stored.sideMode;
       sideEl.value = sideMode;
-      endpointEl.value = endpoint;
+      if (!editedSettings.has('endpointField')) endpointEl.value = endpoint;
     } catch (_error) {
       setHint('Using the default local PawnForge endpoint.');
     }
@@ -781,6 +784,7 @@
   switchEl.addEventListener('change', () => setActive(switchEl.checked));
   sideEl.addEventListener('change', () => {
     sideMode = sideEl.value;
+    editedSettings.add('sideMode');
     persistSettings();
     lastPositionKey = '';
     analyzePosition(true);
@@ -795,12 +799,14 @@
     fenEl.value = value;
     analyzePosition(true);
   });
+  endpointEl.addEventListener('input', () => editedSettings.add('endpointField'));
   saveEndpointEl.addEventListener('click', () => {
     try {
       const value = new URL(endpointEl.value.trim());
       if (value.protocol !== 'http:' || !['localhost', '127.0.0.1'].includes(value.hostname) || value.username || value.password || value.pathname !== '/api/analyze/position') throw new Error('Use http://127.0.0.1:PORT/api/analyze/position.');
       endpoint = value.toString();
       endpointEl.value = endpoint;
+      editedSettings.add('endpoint');
       persistSettings();
       lastPositionKey = '';
       setMessage('API endpoint saved.');

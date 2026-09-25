@@ -96,6 +96,31 @@ test('DOM overlay requires opting into approximate analysis', async ({ page }) =
   await expect(page.locator('#pawnforge-hud')).toContainText('castling and en passant disabled');
 });
 
+test('overlay keeps an endpoint entered before stored settings finish loading', async ({ page }) => {
+  await load(page);
+  await page.evaluate(() => {
+    const stored = { endpoint: 'http://127.0.0.1:9/api/analyze/position', sideMode: 'b' };
+    window.releaseStoredSettings = null;
+    window.chrome = {
+      runtime: { id: 'test', sendMessage: async () => ({ error: 'offline' }) },
+      storage: { local: {
+        get: () => new Promise(resolve => { window.releaseStoredSettings = () => resolve(stored); }),
+        set: async () => {}
+      } }
+    };
+  });
+  await page.addScriptTag({ content: await readFile('overlay.js', 'utf8') });
+  const typed = 'http://127.0.0.1:4189/api/analyze/position';
+  await page.locator('#pawnforge-endpoint').fill(typed);
+  await page.locator('#pawnforge-side').selectOption('w');
+  await page.evaluate(() => window.releaseStoredSettings());
+  await expect(page.locator('#pawnforge-side')).toHaveValue('w');
+  await expect(page.locator('#pawnforge-endpoint')).toHaveValue(typed);
+  await page.locator('#pawnforge-save-endpoint').click();
+  await expect(page.locator('#pawnforge-hud-msg')).not.toContainText('Use http://');
+  await expect(page.locator('#pawnforge-endpoint')).toHaveValue(typed);
+});
+
 test('a custom Black-to-move PGN attributes mistakes and move numbers correctly', async ({ page }) => {
   await load(page);
   await page.route('**/api/analyze/game', async route => {

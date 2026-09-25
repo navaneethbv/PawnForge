@@ -20,17 +20,17 @@ let gameReviewController = null;
 let gameReviewHistory = [];
 
 // ── Piece symbols ──
-const PIECE_UNICODE = {
+const PIECE_UNICODE = new Map(Object.entries({
   wp: '♙', wn: '♘', wb: '♗', wr: '♖', wq: '♕', wk: '♔',
   bp: '♟', bn: '♞', bb: '♝', br: '♜', bq: '♛', bk: '♚'
-};
-const PIECE_NAMES = { p: 'Pawn', n: 'Knight', b: 'Bishop', r: 'Rook', q: 'Queen', k: 'King' };
+}));
+const PIECE_NAMES = new Map(Object.entries({ p: 'Pawn', n: 'Knight', b: 'Bishop', r: 'Rook', q: 'Queen', k: 'King' }));
 
 // Board pieces are drawn from Unicode glyphs: the solid glyph gives the body
 // and, for White, the outline glyph on top supplies the interior detail.
-const PIECE_THEME = Object.fromEntries(Object.keys(PIECE_UNICODE).map((key) => {
-  const solid = PIECE_UNICODE[`b${key[1]}`];
-  const outline = PIECE_UNICODE[`w${key[1]}`];
+const PIECE_THEME = new Map([...PIECE_UNICODE.keys()].map((key) => {
+  const solid = PIECE_UNICODE.get(`b${key[1]}`);
+  const outline = PIECE_UNICODE.get(`w${key[1]}`);
   const text = (glyph, attrs) => `<text x="40" y="66" text-anchor="middle" font-size="68" ${attrs}
     font-family="'DejaVu Sans', 'Segoe UI Symbol', 'Apple Symbols', 'Noto Sans Symbols 2', sans-serif">${glyph}︎</text>`;
   const body = key[0] === 'w'
@@ -210,7 +210,8 @@ function jumpToHistoryPly(ply) {
   currentMoveIndex = ply;
 
   const replay = new Chess(initialFen);
-  for (let i = 0; i <= ply; i++) replay.move(playedMoves[i]);
+  const line = playedMoves.slice(0, ply + 1);
+  line.forEach((move) => replay.move(move));
   game = replay;
   board.position(replay.fen());
   setFenInput(replay.fen());
@@ -218,7 +219,8 @@ function jumpToHistoryPly(ply) {
   clearExplorerUI();
   updateActiveMoveHighlight();
   clearSquareHighlights();
-  if (ply >= 0) highlightLastMove(playedMoves[ply].from, playedMoves[ply].to, null);
+  const last = line.at(-1);
+  if (last) highlightLastMove(last.from, last.to, null);
   updateCoachHint();
 }
 
@@ -530,15 +532,15 @@ function pvToSan(fen, pv, maxPlies = Infinity) {
 function renderCoachCandidate(idx) {
   if (!coachCandidates || coachCandidates.length === 0) return;
   activeCandidateIdx = Math.max(0, Math.min(coachCandidates.length - 1, idx));
-  const cand = coachCandidates[activeCandidateIdx];
+  const cand = coachCandidates.at(activeCandidateIdx);
   const fen = game.fen();
 
   const from = cand.uci.substring(0, 2);
   const to = cand.uci.substring(2, 4);
   const promo = cand.uci.length > 4 ? cand.uci[4] : undefined;
   const piece = new Chess(fen).get(from);
-  const pieceName = piece ? PIECE_NAMES[piece.type] : 'Piece';
-  const pieceIcon = piece ? PIECE_UNICODE[piece.color + piece.type] : '';
+  const pieceName = piece ? PIECE_NAMES.get(piece.type) : 'Piece';
+  const pieceIcon = piece ? PIECE_UNICODE.get(piece.color + piece.type) : '';
   const san = sanForUci(fen, cand.uci);
 
   currentCoachMove = { from, to, promotion: promo, san, uci: cand.uci, evalCp: cand.evalCp };
@@ -864,18 +866,18 @@ function renderPieceBadges(moves, fen) {
       type: 'button',
       class: `piece-badge cat-${cat.key}` + (explorerPieceFilter === key ? ' selected' : ''),
       'aria-pressed': String(explorerPieceFilter === key),
-      title: `Show only ${PIECE_NAMES[key[1]].toLowerCase()} moves`,
+      title: `Show only ${PIECE_NAMES.get(key[1]).toLowerCase()} moves`,
       onclick: () => {
         explorerPieceFilter = explorerPieceFilter === key ? null : key;
         el.pieceBadges.querySelectorAll('.piece-badge').forEach((b, i) => {
-          const selected = sortedKeys[i] === explorerPieceFilter;
+          const selected = sortedKeys.at(i) === explorerPieceFilter;
           b.classList.toggle('selected', selected);
           b.setAttribute('aria-pressed', String(selected));
         });
         applyExplorerFilters();
       }
     },
-    h('span', { class: 'piece-icon', 'aria-hidden': 'true' }, PIECE_UNICODE[key]),
+    h('span', { class: 'piece-icon', 'aria-hidden': 'true' }, PIECE_UNICODE.get(key)),
     h('span', { class: 'piece-best-move' }, best.san || best.uci),
     h('span', { class: 'piece-eval' }, `${formatEval(toWhiteRelativeEval(best.evalCp, fen))} · ${cat.label}`),
     h('span', { class: 'piece-count' }, `${pieceMoves.length} move${pieceMoves.length === 1 ? '' : 's'}`));
@@ -1088,7 +1090,7 @@ function drawEvalGraph(plies, activePly = -1) {
     ctx.lineTo(x, pad.top + gh);
     ctx.stroke();
     ctx.beginPath();
-    ctx.arc(x, yAt(plies[activePly]), 5, 0, Math.PI * 2);
+    ctx.arc(x, yAt(plies.at(activePly)), 5, 0, Math.PI * 2);
     ctx.fillStyle = '#fff';
     ctx.fill();
     ctx.strokeStyle = '#3b82f6';
@@ -1104,7 +1106,7 @@ function drawEvalGraph(plies, activePly = -1) {
   const every = Math.max(1, Math.ceil(fullMoves / Math.max(1, Math.floor(gw / 42))));
   let lastLabel = null;
   plies.forEach((_p, i) => {
-    const fields = gameReviewPreFens[i]?.split(' ');
+    const fields = gameReviewPreFens.at(i)?.split(' ');
     const number = Number(fields?.[5] || Math.floor(i / 2) + 1);
     if (number === lastLabel || (number - 1) % every !== 0) return;
     lastLabel = number;
@@ -1176,7 +1178,7 @@ function renderGameMoveList(data) {
   const rows = [];
   let row = null;
   data.plies.forEach((p, i) => {
-    const before = gameReviewPreFens[i].split(' ');
+    const before = gameReviewPreFens.at(i).split(' ');
     const blackMove = before[1] === 'b';
     if (!blackMove || i === 0) {
       row = h('div', { class: 'game-move-row' },
@@ -1201,21 +1203,22 @@ function navigateToGamePly(ply) {
   if (!gameReviewData || ply < 0 || ply >= gameReviewData.plies.length) return;
 
   gameReviewPly = ply;
-  const fen = gameReviewFens[ply];
-  const plyData = gameReviewData.plies[ply];
+  const fen = gameReviewFens.at(ply);
+  const plyData = gameReviewData.plies.at(ply);
 
   // Load the reviewed game into the board history.
   initialFen = gameReviewPreFens[0];
   playedMoves = gameReviewHistory.map(({ from, to, promotion, san }) => ({ from, to, promotion, san }));
   currentMoveIndex = ply;
   game = new Chess(initialFen);
-  for (let i = 0; i <= ply; i++) game.move(playedMoves[i]);
+  playedMoves.slice(0, ply + 1).forEach((move) => game.move(move));
   board.position(fen);
   renderMoves();
   clearExplorerUI();
   clearPositionAnalysis();
   updateEvalBar(toWhiteRelativeEval(plyData.evalCp, fen));
-  highlightLastMove(playedMoves[ply].from, playedMoves[ply].to, plyData.category.key);
+  const lastMove = playedMoves.at(ply);
+  highlightLastMove(lastMove.from, lastMove.to, plyData.category.key);
 
   el.gameMoveList.querySelectorAll('.game-move').forEach((m) => {
     const active = Number(m.dataset.ply) === ply;
@@ -1233,7 +1236,7 @@ function renderGameSummary(data, hist) {
   const sides = { w: blank(), b: blank() };
 
   data.plies.forEach((p, i) => {
-    const side = hist[i].color === 'b' ? sides.b : sides.w;
+    const side = hist.at(i).color === 'b' ? sides.b : sides.w;
     const key = p.category.key;
     if (side.counts.has(key)) side.counts.set(key, side.counts.get(key) + 1);
     side.totalDelta += p.deltaCp;
@@ -1571,7 +1574,7 @@ setSoundEnabled(soundEnabled);
 board = window.Chessboard('board', {
   draggable: true,
   position: 'start',
-  pieceTheme: (piece) => PIECE_THEME[piece],
+  pieceTheme: (piece) => PIECE_THEME.get(piece),
   onDragStart,
   onDrop,
   onSnapEnd

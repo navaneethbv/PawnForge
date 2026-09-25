@@ -90,7 +90,7 @@ export function parsePgnMoves(pgn) {
 // Run `fn` over `items` with at most `limit` calls in flight. The first
 // failure stops scheduling further items and is rethrown.
 export async function mapWithConcurrency(items, limit, fn) {
-  const results = new Array(items.length);
+  const results = new Map();
   let next = 0;
   let failed = false;
   const runner = async () => {
@@ -98,7 +98,7 @@ export async function mapWithConcurrency(items, limit, fn) {
       const index = next;
       next += 1;
       try {
-        results[index] = await fn(items[index], index);
+        results.set(index, await fn(items.at(index), index));
       } catch (error) {
         failed = true;
         throw error;
@@ -106,7 +106,7 @@ export async function mapWithConcurrency(items, limit, fn) {
     }
   };
   await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, runner));
-  return results;
+  return items.map((_item, index) => results.get(index));
 }
 
 export const openingBook = [
@@ -211,11 +211,15 @@ export const openingBook = [
   { line: ['d4', 'Nf6', 'c4'], eco: 'A50', name: 'Indian Defence, Normal Variation' },
 ];
 
+function startsWith(line, prefix) {
+  return prefix.every((move, i) => line.at(i) === move);
+}
+
 export function findContinuations(moveList) {
   // Name each next move after the shortest book line it enters.
   const byMove = new Map();
   for (const item of openingBook) {
-    if (item.line.length <= moveList.length || !moveList.every((m, i) => item.line[i] === m)) continue;
+    if (item.line.length <= moveList.length || !startsWith(item.line, moveList)) continue;
     const move = item.line[moveList.length];
     const current = byMove.get(move);
     if (!current || item.line.length < current.line.length) byMove.set(move, item);
@@ -233,7 +237,7 @@ export function detectOpening(moveList, { startFen = START_FEN } = {}) {
 
   let bestMatch = null;
   for (const item of openingBook) {
-    if (item.line.every((m, i) => moveList[i] === m) && item.line.length > (bestMatch?.line.length ?? 0)) {
+    if (startsWith(moveList, item.line) && item.line.length > (bestMatch?.line.length ?? 0)) {
       bestMatch = item;
     }
   }

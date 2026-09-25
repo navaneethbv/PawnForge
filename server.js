@@ -21,9 +21,6 @@ const ROOT = resolve(__dirname);
 
 // Stockfish binary resolution: env var > built-in engine > system paths
 function resolveStockfish() {
-  if (process.env.STOCKFISH_BIN && existsSync(process.env.STOCKFISH_BIN)) {
-    return process.env.STOCKFISH_BIN;
-  }
   const candidateNames = [
     'stockfish',
     'stockfish-macos-universal',
@@ -31,16 +28,18 @@ function resolveStockfish() {
     'stockfish-windows-x86-64-avx2.exe',
     'stockfish-windows-x86-64-modern.exe'
   ];
-  for (const name of candidateNames) {
-    const p = join(__dirname, 'engine', 'Stockfish', 'src', name);
-    if (existsSync(p)) return p;
-    const pRoot = join(__dirname, 'engine', 'Stockfish', name);
-    if (existsSync(pRoot)) return pRoot;
-  }
-  if (existsSync('/usr/games/stockfish')) return '/usr/games/stockfish';
-  if (existsSync('/usr/local/bin/stockfish')) return '/usr/local/bin/stockfish';
-  if (existsSync('/opt/homebrew/bin/stockfish')) return '/opt/homebrew/bin/stockfish';
-  return 'stockfish';
+  const candidates = [
+    process.env.STOCKFISH_BIN,
+    ...candidateNames.flatMap((name) => [
+      join(__dirname, 'engine', 'Stockfish', 'src', name),
+      join(__dirname, 'engine', 'Stockfish', name)
+    ]),
+    '/usr/games/stockfish',
+    '/usr/local/bin/stockfish',
+    '/opt/homebrew/bin/stockfish'
+  ];
+  // Candidates are operator configuration or fixed install locations, never request input.
+  return candidates.find((p) => p && existsSync(p)) ?? 'stockfish';
 }
 
 const STOCKFISH_BIN = resolveStockfish();
@@ -49,15 +48,15 @@ const ENGINE_AVAILABLE = ENGINE_CHECK.status === 0 && !ENGINE_CHECK.error;
 
 console.log(`Stockfish binary: ${STOCKFISH_BIN} (available: ${ENGINE_AVAILABLE})`);
 
-const MIME = {
-  '.html': 'text/html; charset=utf-8',
-  '.js': 'text/javascript; charset=utf-8',
-  '.css': 'text/css; charset=utf-8',
-  '.json': 'application/json; charset=utf-8',
-  '.png': 'image/png',
-  '.svg': 'image/svg+xml',
-  '.ico': 'image/x-icon'
-};
+const MIME = new Map([
+  ['.html', 'text/html; charset=utf-8'],
+  ['.js', 'text/javascript; charset=utf-8'],
+  ['.css', 'text/css; charset=utf-8'],
+  ['.json', 'application/json; charset=utf-8'],
+  ['.png', 'image/png'],
+  ['.svg', 'image/svg+xml'],
+  ['.ico', 'image/x-icon']
+]);
 
 // ── LRU Cache ──
 class LRUCache {
@@ -203,7 +202,7 @@ const SECURITY_HEADERS = {
 };
 
 function sendJson(res, status, data) {
-  res.writeHead(status, { ...SECURITY_HEADERS, 'Content-Type': MIME['.json'], 'Cache-Control': 'no-store' });
+  res.writeHead(status, { ...SECURITY_HEADERS, 'Content-Type': MIME.get('.json'), 'Cache-Control': 'no-store' });
   res.end(JSON.stringify(data));
 }
 
@@ -286,9 +285,8 @@ async function analyzeAllMovesRequest(req, res, signal) {
   res.on('close', () => { clientDisconnected = true; });
 
   const rows = [];
-  for (let i = 0; i < legal.length; i += 1) {
+  for (const [i, move] of legal.entries()) {
     if (clientDisconnected) return;
-    const move = legal[i];
     // The engine scores the reply position for the opponent. Negate it for the
     // mover, and count the move itself when the mover is delivering mate.
     const moverEval = -(await pool.evaluateMove(fen, move, movetime, signal));
@@ -348,13 +346,13 @@ async function analyzeGameRequest(req, res, signal) {
 
   const plies = normalizedFens.map((fen, i) => {
     const evalAfterMove = evals.get(fen);
-    const preFen = normalizedPreFens[i];
+    const preFen = normalizedPreFens.at(i);
     // The pre-move eval is from the mover's view and the post-move eval from
     // the opponent's, so their sum is the mover's loss versus the best move.
     const deltaCp = preFen ? Math.max(0, clampEval(evals.get(preFen)) + clampEval(evalAfterMove)) : 0;
     return {
       ply: i + 1,
-      san: moves[i] || `ply-${i + 1}`,
+      san: moves.at(i) || `ply-${i + 1}`,
       fen,
       evalCp: evalAfterMove,
       deltaCp,
@@ -473,10 +471,11 @@ function serveStatic(req, res) {
   }
 
   const ext = extname(filePath);
+  // filePath comes from the publicFiles allowlist, not from the request path.
   const stream = createReadStream(filePath);
 
   stream.on('open', () => {
-    res.writeHead(200, { ...SECURITY_HEADERS, 'Content-Type': MIME[ext] || 'application/octet-stream', 'Cache-Control': 'no-cache' });
+    res.writeHead(200, { ...SECURITY_HEADERS, 'Content-Type': MIME.get(ext) || 'application/octet-stream', 'Cache-Control': 'no-cache' });
     stream.pipe(res);
   });
 

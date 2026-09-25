@@ -585,7 +585,8 @@
   }
 
   function selectCandidate(index) {
-    const candidate = activeCandidates[index];
+    if (!Number.isInteger(index) || index < 0) return;
+    const candidate = activeCandidates.at(index);
     if (!candidate || typeof candidate.uci !== 'string' || candidate.uci.length < 4) return;
     const from = candidate.uci.slice(0, 2).toUpperCase();
     const to = candidate.uci.slice(2, 4).toUpperCase();

@@ -112,6 +112,8 @@ test('a custom Black-to-move PGN attributes mistakes and move numbers correctly'
   await expect(page.locator('#gameMoveList')).toContainText('1...');
   await expect(page.locator('.summary-card').filter({ hasText: 'Black ACPL' })).toContainText('200.0');
   await expect(page.locator('.summary-card').filter({ hasText: 'White ACPL' })).toContainText('0');
+  await expect(page.locator('.quality-table tr').filter({ hasText: 'Mistake' }).locator('td')).toHaveText(['Mistake', '0', '1']);
+  await expect(page.locator('.quality-table tr').filter({ hasText: 'Best' }).locator('td')).toHaveText(['Best', '0', '0']);
   await page.locator('.game-move').click();
   await expect(page.locator('#board .square-e5 img')).toHaveCount(1);
   await expect(page.locator('#moveList')).toContainText('1...');

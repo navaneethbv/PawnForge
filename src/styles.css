@@ -1208,13 +1208,12 @@ label.field-label { margin-bottom: 6px; }
 }
 
 .game-move:hover { background: var(--surface-3); }
-.game-move.active { background: var(--accent); color: #fff; }
 .game-move.cat-best { --cat-color: var(--best); }
 .game-move.cat-good { --cat-color: var(--good); }
 .game-move.cat-inaccuracy { --cat-color: var(--inaccuracy); color: #fbbf24; }
 .game-move.cat-mistake { --cat-color: var(--mistake); color: #fb923c; font-weight: 600; }
 .game-move.cat-blunder { --cat-color: var(--blunder); color: #f87171; font-weight: 700; }
-.game-move.active { color: #fff; }
+.game-move.active { background: var(--accent); color: #fff; }
 
 /* ── Openings ── */
 .opening-result {

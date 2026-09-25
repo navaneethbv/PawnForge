@@ -1229,12 +1229,13 @@ function navigateToGamePly(ply) {
 
 function renderGameSummary(data, hist) {
   const keys = ['best', 'good', 'inaccuracy', 'mistake', 'blunder'];
-  const blank = () => ({ best: 0, good: 0, inaccuracy: 0, mistake: 0, blunder: 0, totalDelta: 0, count: 0 });
+  const blank = () => ({ counts: new Map(keys.map((key) => [key, 0])), totalDelta: 0, count: 0 });
   const sides = { w: blank(), b: blank() };
 
   data.plies.forEach((p, i) => {
-    const side = sides[hist[i].color];
-    side[p.category.key] += 1;
+    const side = hist[i].color === 'b' ? sides.b : sides.w;
+    const key = p.category.key;
+    if (side.counts.has(key)) side.counts.set(key, side.counts.get(key) + 1);
     side.totalDelta += p.deltaCp;
     side.count += 1;
   });
@@ -1259,8 +1260,8 @@ function renderGameSummary(data, hist) {
       h('thead', {}, h('tr', {}, h('th', {}, 'Move quality'), h('th', {}, 'White'), h('th', {}, 'Black'))),
       h('tbody', {}, keys.map((key) => h('tr', {},
         h('td', {}, h('span', { class: `eval-badge ${key}` }, classifyLabel(key))),
-        h('td', {}, String(sides.w[key])),
-        h('td', {}, String(sides.b[key])))))));
+        h('td', {}, String(sides.w.counts.get(key))),
+        h('td', {}, String(sides.b.counts.get(key))))))));
   el.gameSummary.hidden = false;
 }
 

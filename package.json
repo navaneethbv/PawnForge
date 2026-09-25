@@ -7,7 +7,7 @@
   "scripts": {
     "serve": "node server.js",
     "start": "node server.js",
-    "check": "node --check server.js && node --check engine-worker.js && node --check src/main.js && node --check overlay.js && node --check background.js",
+    "check": "node --check server.js && node --check chess-analysis.js && node --check engine-worker.js && node --check src/main.js && node --check overlay.js && node --check background.js",
     "test": "node --test tests/*.test.js",
     "test:browser": "playwright test",
     "lint": "eslint . --max-warnings 0",

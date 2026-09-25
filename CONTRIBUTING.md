@@ -3,8 +3,8 @@
 ## Branch policy
 
 Changes to `main` must arrive through a pull request.
-The [Protect main ruleset](https://github.com/navaneethbv/PawnForge/rules/23643627) blocks deletion and force pushes, requires an up-to-date branch and resolved review threads, and has no bypass actors.
-The repository owner is the only current collaborator/admin and is listed in `.github/CODEOWNERS`.
+The Protect main ruleset (Settings > Rules) blocks deletion and force pushes, requires an up-to-date branch and resolved review threads, and has no bypass actors.
+The repository owner is the only current collaborator/admin.
 Required approvals are zero because GitHub does not allow authors to approve their own pull requests.
 This does not waive the required checks.
 

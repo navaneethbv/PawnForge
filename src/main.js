@@ -33,7 +33,7 @@ const PIECE_THEME = new Map([...PIECE_UNICODE.keys()].map((key) => {
   const outline = PIECE_UNICODE.get(`w${key[1]}`);
   const text = (glyph, attrs) => `<text x="40" y="66" text-anchor="middle" font-size="68" ${attrs}
     font-family="'DejaVu Sans', 'Segoe UI Symbol', 'Apple Symbols', 'Noto Sans Symbols 2', sans-serif">${glyph}︎</text>`;
-  const body = key[0] === 'w'
+  const body = key.startsWith('w')
     ? text(solid, 'fill="#fbfbfb" stroke="#1b1f27" stroke-width="3" stroke-linejoin="round" paint-order="stroke"') + text(outline, 'fill="#1b1f27"')
     : text(solid, 'fill="#1b1f27" stroke="#1b1f27" stroke-width="3" stroke-linejoin="round" paint-order="stroke"') + text(outline, 'fill="#5b6475" opacity="0.55"');
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 80">${body}</svg>`;
@@ -173,7 +173,8 @@ function playChessSound(type = 'move') {
 }
 
 function moveSound(move) {
-  return game.inCheck() ? 'check' : (move.captured ? 'capture' : 'move');
+  if (game.inCheck()) return 'check';
+  return move.captured ? 'capture' : 'move';
 }
 
 // ── Move History Tracking & Interactive Navigation ──
@@ -193,7 +194,8 @@ function recordPlayedMove(move) {
 // Side to move after `ply` (-1 = the initial position) of the move history.
 function turnAfterPly(ply) {
   const first = initialFen.split(' ')[1];
-  return (ply + 1) % 2 === 0 ? first : (first === 'w' ? 'b' : 'w');
+  if ((ply + 1) % 2 === 0) return first;
+  return first === 'w' ? 'b' : 'w';
 }
 
 function updateActiveMoveHighlight() {
@@ -250,7 +252,7 @@ function playUci(uci) {
 // ── Engine status ──
 function setEngineStatus(text, state = 'idle') {
   el.status.replaceChildren(h('span', { class: 'dot' }), h('span', { class: 'engine-text' }, text));
-  el.status.className = 'engine-indicator' + (state === 'active' ? ' active' : state === 'error' ? ' error' : '');
+  el.status.className = ['active', 'error'].includes(state) ? `engine-indicator ${state}` : 'engine-indicator';
 }
 
 // ── Evaluation formatting ──
@@ -289,7 +291,8 @@ function cpToWDL(cp) {
 function updateEvalBar(evalCp) {
   currentEvalCp = evalCp;
   const clamped = Math.max(-1000, Math.min(1000, evalCp));
-  const whiteShare = isMateScore(evalCp) ? (evalCp > 0 ? 1 : 0) : 0.5 + (clamped / 1000) * 0.45;
+  let whiteShare = 0.5 + (clamped / 1000) * 0.45;
+  if (isMateScore(evalCp)) whiteShare = evalCp > 0 ? 1 : 0;
   el.evalBarFill.style.transform = `scaleY(${whiteShare.toFixed(4)})`;
 
   const whiteAhead = evalCp >= 0;
@@ -373,9 +376,8 @@ function renderBoardBadges(moves, fen) {
     const cat = m.category || classify(m.deltaCp || 0);
     const pos = squareToPosition(to);
     const whiteEval = toWhiteRelativeEval(m.evalCp, fen);
-    const text = isMateScore(whiteEval)
-      ? formatEval(whiteEval)
-      : `${whiteEval >= 0 ? '+' : '−'}${Math.abs(whiteEval / 100).toFixed(1)}`;
+    const sign = whiteEval >= 0 ? '+' : '−';
+    const text = isMateScore(whiteEval) ? formatEval(whiteEval) : `${sign}${Math.abs(whiteEval / 100).toFixed(1)}`;
     el.boardBadgeOverlay.appendChild(h('div', {
       class: `board-eval-badge cat-${cat.key}`,
       style: `left:${pos.left}%;top:${pos.top}%`
@@ -411,6 +413,12 @@ function svgEl(tag, attrs) {
   return node;
 }
 
+const ARROW_STYLES = [
+  { cls: 'coach-arrow-path', marker: 'coachArrowHead' },
+  { cls: 'coach-arrow-path-secondary', marker: 'coachArrowHeadSecondary' },
+  { cls: 'coach-arrow-path-tertiary', marker: 'coachArrowHeadTertiary' }
+];
+
 function renderMoveArrow(from, to, rank = 1) {
   if (!from || !to) return;
   const start = squareToCenterCoords(from);
@@ -426,8 +434,7 @@ function renderMoveArrow(from, to, rank = 1) {
   if (rank === 1) {
     el.boardArrowOverlay.appendChild(svgEl('circle', { cx: start.x, cy: start.y, r: '4.5', class: 'coach-origin-pointer' }));
   }
-  const cls = rank === 1 ? 'coach-arrow-path' : (rank === 2 ? 'coach-arrow-path-secondary' : 'coach-arrow-path-tertiary');
-  const marker = rank === 1 ? 'coachArrowHead' : (rank === 2 ? 'coachArrowHeadSecondary' : 'coachArrowHeadTertiary');
+  const { cls, marker } = ARROW_STYLES.at(Math.min(Math.max(rank, 1), ARROW_STYLES.length) - 1);
   el.boardArrowOverlay.appendChild(svgEl('path', {
     d: `M ${start.x} ${start.y} L ${targetX} ${targetY}`,
     class: cls,
@@ -523,7 +530,9 @@ function pvToSan(fen, pv, maxPlies = Infinity) {
     let move;
     try { move = replay.move({ from: uci.slice(0, 2), to: uci.slice(2, 4), promotion: uci[4] }); } catch (_e) { break; }
     if (!move) break;
-    const number = fields[1] === 'w' ? `${fields[5]}.` : (parts.length === 0 ? `${fields[5]}...` : null);
+    let number = null;
+    if (fields[1] === 'w') number = `${fields[5]}.`;
+    else if (parts.length === 0) number = `${fields[5]}...`;
     parts.push({ number, san: move.san });
   }
   return parts;
@@ -978,7 +987,9 @@ function runAllMoves() {
             row.flags = moveObj.flags;
             tmpGame.undo();
           }
-        } catch (_e) {}
+        } catch (_e) {
+          // An engine move the local rules reject keeps its UCI label without SAN or flags.
+        }
         return row;
       });
       allMovesResultFen = currentFen;
@@ -1055,7 +1066,7 @@ function drawEvalGraph(plies, activePly = -1) {
     ctx.moveTo(pad.left, y);
     ctx.lineTo(pad.left + gw, y);
     ctx.stroke();
-    ctx.fillStyle = '#6b7587';
+    ctx.fillStyle = '#8490a3';
     ctx.fillText(label, pad.left - 6, y);
   }
 
@@ -1099,7 +1110,7 @@ function drawEvalGraph(plies, activePly = -1) {
   }
 
   // Move numbers along the bottom, at White's plies only.
-  ctx.fillStyle = '#6b7587';
+  ctx.fillStyle = '#8490a3';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'alphabetic';
   const fullMoves = Math.ceil(plies.length / 2);
@@ -1119,6 +1130,15 @@ async function analyzeGame() {
   const requestId = ++gameReviewRequestId;
   gameReviewController?.abort();
   gameReviewController = new AbortController();
+  gameReviewData = null;
+  gameReviewPly = -1;
+  gameReviewFens = [];
+  gameReviewPreFens = [];
+  gameReviewHistory = [];
+  el.gameSummary.hidden = true;
+  el.evalGraphContainer.hidden = true;
+  el.gameMoveList.hidden = true;
+  el.gameMoveList.replaceChildren();
   try {
     let hist;
     let startFen;
@@ -1286,9 +1306,10 @@ async function detectOpening() {
 
     const plies = game.history().length;
     const range = data.bookPlyRange;
-    const meta = range
-      ? `Book line covers plies ${range[0]}–${range[1]} · ${plies} ${plies === 1 ? 'ply' : 'plies'} played`
-      : (plies ? 'No book line matches this move order.' : 'Make a move to identify the opening.');
+    const plyLabel = plies === 1 ? 'ply' : 'plies';
+    let meta = 'Make a move to identify the opening.';
+    if (range) meta = `Book line covers plies ${range[0]}–${range[1]} · ${plies} ${plyLabel} played`;
+    else if (plies) meta = 'No book line matches this move order.';
     el.openingResult.replaceChildren(h('div', { class: 'opening-card' },
       h('div', { class: 'opening-name' },
         data.eco ? h('span', { class: 'opening-eco' }, data.eco) : null,
@@ -1307,6 +1328,7 @@ async function detectOpening() {
           title: `Play ${c.move}`,
           onclick: () => {
             if (game.fen() !== fen) return;
+            if (sparringActive && (isEngineThinking || game.turn() !== sparringPlayerColor)) return;
             let move = null;
             try { move = game.move(c.move); } catch (_e) {}
             if (!move) return;
@@ -1396,6 +1418,8 @@ function loadPosition(fen) {
   currentMoveIndex = -1;
   gameReviewRequestId += 1;
   gameReviewController?.abort();
+  gameReviewController = null;
+  el.gameProgress.hidden = true;
   board.position(game.fen());
   renderMoves();
   clearPositionAnalysis();

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   MATE_SCORE, START_FEN, clampEval, classify, detectOpening, findContinuations,
-  mapWithConcurrency, parseScore, validateFen
+  mapWithConcurrency, parsePgnMoves, parseScore, validateFen
 } from '../chess-analysis.js';
 
 test('mate scores keep their distance and ordering', () => {
@@ -57,4 +57,18 @@ test('mapWithConcurrency preserves order and bounds parallelism', async () => {
   assert.deepEqual(result, [50, 10, 30, 20]);
   assert.equal(peak, 2);
   await assert.rejects(mapWithConcurrency([1, 2], 1, async () => { throw new Error('boom'); }), /boom/);
+});
+
+test('parsePgnMoves strips tags, comments, nested variations, move numbers and results', () => {
+  const pgn = '[Event "a {b} (c)"]\n[Site "?"]\n\n1. e4 {best by test} e5 (1... c5 2. Nf3 (2. c3 d5) d6) 2.Nf3 Nc6 3...a6 1/2-1/2';
+  assert.deepEqual(parsePgnMoves(pgn), ['e4', 'e5', 'Nf3', 'Nc6', 'a6']);
+  assert.deepEqual(parsePgnMoves('1. d4 d5 *'), ['d4', 'd5']);
+  assert.deepEqual(parsePgnMoves('1. e4 1-0'), ['e4']);
+});
+
+test('parsePgnMoves stays linear on unterminated annotations', () => {
+  const start = performance.now();
+  assert.deepEqual(parsePgnMoves(`1. e4 ${'{'.repeat(200000)}`), ['e4']);
+  assert.deepEqual(parsePgnMoves(`1. e4 ${'1'.repeat(200000)}`).length, 2);
+  assert.ok(performance.now() - start < 2000);
 });

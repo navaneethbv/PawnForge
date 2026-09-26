@@ -225,3 +225,133 @@ test('a FEN without move counters is normalised before numbering moves', async (
   await expect(page.locator('#fenError')).toBeVisible();
   await expect(page.locator('#board .square-e5 img')).toHaveCount(1);
 });
+
+test('real-engine workflows render analysis, coach, explorer filters and a complete game review', async ({ page }) => {
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await load(page);
+  await page.locator('#depthSelect').selectOption('8');
+  await page.locator('#analyzePositionBtn').click();
+  await expect(page.locator('.pv-line')).toHaveCount(3);
+  await page.locator('.pv-line').first().click();
+  await expect(page.locator('#moveList .move-san')).toHaveCount(1);
+  await page.locator('#resetBtn').click();
+
+  await page.locator('.coach-toggle-label').click();
+  await expect(page.locator('.coach-candidate-pill')).toHaveCount(3);
+  await page.locator('#applyCoachMoveBtn').click();
+  await expect(page.locator('#moveList .move-san')).toHaveCount(1);
+  await page.locator('.coach-toggle-label').click();
+  await page.locator('#resetBtn').click();
+
+  await page.locator('[data-tab="explorer"]').click();
+  await page.locator('#movetimeSelect').selectOption('50');
+  await page.locator('#analyzeAllMovesBtn').click();
+  await expect(page.locator('#allMovesTable tbody tr')).toHaveCount(20);
+  await page.locator('#allMovesTable').focus();
+  await expect(page.locator('#allMovesTable')).toBeFocused();
+  await page.keyboard.press('ArrowDown');
+  await expect.poll(() => page.locator('#allMovesTable').evaluate(table => table.scrollTop)).toBeGreaterThan(0);
+  await page.locator('.piece-badge[title="Show only knight moves"]').click();
+  await expect(page.locator('#allMovesTable tbody tr')).toHaveCount(4);
+  await page.locator('.piece-badge[title="Show only knight moves"]').click();
+  await page.locator('#filterPiece').selectOption('captures');
+  await expect(page.locator('#allMovesTable')).toContainText('No moves match');
+  await page.locator('#filterPiece').selectOption('');
+  await page.locator('#sortMoves').selectOption('piece');
+  await expect(page.locator('#allMovesTable .move-cell').first()).toContainText('N');
+
+  await page.locator('[data-tab="opening"]').click();
+  await page.locator('#openingBtn').click();
+  await page.locator('.continuation-row').filter({ has: page.locator('.continuation-move', { hasText: /^e4$/ }) }).click();
+  await expect(page.locator('#fenInput')).toHaveValue(afterE4);
+  await expect(page.locator('#openingResult')).toContainText("King's Pawn Opening");
+
+  await page.locator('[data-tab="game-review"]').click();
+  await page.locator('#gameDepthSelect').selectOption('8');
+  await page.locator('#pgnInput').fill('1. e4 e5 2. Qh5 Nc6 3. Bc4 Nf6 4. Qxf7# 1-0');
+  await page.locator('#analyzeGameBtn').click();
+  await expect(page.locator('.game-move')).toHaveCount(7);
+  await expect(page.locator('#gameSummary')).toContainText('7 plies');
+  await page.locator('#navLast').click();
+  await expect(page.locator('#evalDisplay')).toHaveText('#');
+  await expect(page.locator('#board .square-f7 img')).toHaveAttribute('data-piece', 'wQ');
+  await page.locator('#navPrev').click();
+  await expect(page.locator('#board .square-h5 img')).toHaveAttribute('data-piece', 'wQ');
+  await page.locator('#navLast').click();
+
+  for (const width of [375, 768, 1440]) {
+    await page.setViewportSize({ width, height: 1000 });
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth)).toBe(width);
+    await page.screenshot({ path: `test-results/review-${width}.png`, fullPage: true });
+  }
+  expect(errors).toEqual([]);
+});
+
+test('a failed replacement PGN review clears the previous summary and graph', async ({ page }) => {
+  await load(page);
+  await page.locator('[data-tab="game-review"]').click();
+  await page.locator('#pgnInput').fill('1. e4 e5 *');
+  await page.locator('#analyzeGameBtn').click();
+  await expect(page.locator('#gameSummary')).toBeVisible();
+  await page.locator('#pgnInput').fill('not a chess game');
+  await page.locator('#analyzeGameBtn').click();
+  await expect(page.locator('#gameMoveList')).toContainText('Could not read the PGN');
+  await expect(page.locator('#gameSummary')).toBeHidden();
+  await expect(page.locator('#evalGraphContainer')).toBeHidden();
+});
+
+test('resetting during a PGN review dismisses its cancelled progress indicator', async ({ page }) => {
+  await load(page);
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  await page.route('**/api/analyze/game', async route => {
+    await gate;
+    await route.abort().catch(() => {});
+  });
+  await page.locator('[data-tab="game-review"]').click();
+  await page.locator('#pgnInput').fill('1. e4 e5 *');
+  const requested = page.waitForRequest('**/api/analyze/game');
+  await page.locator('#analyzeGameBtn').click();
+  await requested;
+  await expect(page.locator('#gameProgress')).toBeVisible();
+  await page.locator('#resetBtn').click();
+  release();
+  await expect(page.locator('#gameProgress')).toBeHidden();
+  await expect(page.locator('#fenInput')).toHaveValue(start);
+});
+
+test('opening continuations cannot play the engine turn during sparring', async ({ page }) => {
+  await load(page);
+  await page.locator('[data-tab="opening"]').click();
+  await page.locator('#openingBtn').click();
+  const continuation = page.locator('.continuation-row').filter({ has: page.locator('.continuation-move', { hasText: /^e4$/ }) });
+  await expect(continuation).toBeVisible();
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  await page.route('**/api/analyze/position', async route => {
+    await gate;
+    await route.fulfill({ json: { topMoves: [{ uci: 'd2d4', evalCp: 0, pv: 'd2d4' }], bestEvalCp: 0 } }).catch(() => {});
+  });
+  await page.locator('#sparringColor').selectOption('b');
+  const requested = page.waitForRequest('**/api/analyze/position');
+  await page.locator('.sparring-toggle-label').click();
+  await requested;
+  await continuation.click();
+  const fenWhileThinking = await page.locator('#fenInput').inputValue();
+  release();
+  expect(fenWhileThinking).toBe(start);
+  await expect(page.locator('#moveList .move-san')).toHaveText(['d4']);
+});
+
+test('terminal positions distinguish checkmate from stalemate with the real engine', async ({ request }) => {
+  for (const [fen, score] of [
+    ['7k/6Q1/6K1/8/8/8/8/8 b - - 0 1', -100000],
+    ['7k/5Q2/6K1/8/8/8/8/8 b - - 0 1', 0]
+  ]) {
+    const response = await request.post('/api/analyze/position', { data: { fen, settings: { depth: 4, multiPv: 3 } } });
+    expect(response.ok()).toBeTruthy();
+    expect(await response.json()).toMatchObject({ bestEvalCp: score, topMoves: [] });
+  }
+});

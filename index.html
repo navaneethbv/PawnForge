@@ -53,9 +53,9 @@
             <svg class="icon" aria-hidden="true"><use href="#i-book" /></svg><span>Openings</span>
           </button>
         </nav>
-        <div id="engineStatus" class="engine-indicator" role="status" aria-live="polite">
+        <output id="engineStatus" class="engine-indicator" aria-live="polite">
           <span class="dot"></span><span class="engine-text">Ready</span>
-        </div>
+        </output>
       </header>
 
       <main class="layout">
@@ -335,7 +335,7 @@
               </label>
             </div>
 
-            <div id="allMovesTable" class="all-moves-table"></div>
+            <div id="allMovesTable" class="all-moves-table" tabindex="0" role="region" aria-label="Evaluated moves"></div>
           </div>
 
           <!-- Tab: Opening -->

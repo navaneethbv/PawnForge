@@ -75,16 +75,34 @@ export function classify(deltaCp) {
   return { key: 'blunder', label: 'Blunder' };
 }
 
+const PGN_RESULTS = new Set(['1-0', '0-1', '1/2-1/2', '*']);
+
+// Remove tags, comments and (possibly nested) variations in one linear pass.
+// Tags and comments do not nest; variations can contain both.
+function stripPgnAnnotations(pgn) {
+  let text = '';
+  const open = [];
+  for (const ch of pgn) {
+    const top = open.at(-1);
+    if (top === '{' || top === '[') {
+      if (ch === (top === '{' ? '}' : ']')) open.pop();
+    } else if (ch === '{' || ch === '[' || ch === '(') {
+      open.push(ch);
+      text += ' ';
+    } else if (ch === ')' && top === '(') {
+      open.pop();
+    } else if (!top) {
+      text += ch;
+    }
+  }
+  return text;
+}
+
 export function parsePgnMoves(pgn) {
-  return pgn
-    .replace(/\{[^}]*\}/g, ' ')
-    .replace(/\([^)]*\)/g, ' ')
-    .replace(/\[[^\]]*\]/g, ' ')
-    .replace(/\d+\.(\.\.)?/g, ' ')
-    .replace(/1-0|0-1|1\/2-1\/2|\*/g, ' ')
-    .trim()
+  return stripPgnAnnotations(pgn)
     .split(/\s+/)
-    .filter(Boolean);
+    .map((token) => token.replace(/^\d+\.+/, ''))
+    .filter((token) => token && !PGN_RESULTS.has(token));
 }
 
 // Run `fn` over `items` with at most `limit` calls in flight. The first

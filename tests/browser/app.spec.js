@@ -88,7 +88,7 @@ test('DOM overlay requires opting into approximate analysis', async ({ page }) =
   await page.locator('#fenInput').evaluate(el => el.remove());
   await page.locator('#board').evaluate(el => { el.dataset.turn = 'w'; });
   await page.addScriptTag({ content: await readFile('overlay.js', 'utf8') });
-  await expect(page.locator('#pawnforge-hud-msg')).toContainText('Paste a full FEN');
+  await expect(page.locator('#pawnforge-hud-msg')).toContainText('Press Analyze');
   await page.locator('#pawnforge-endpoint').fill('http://127.0.0.1:4189/api/analyze/position');
   await page.locator('#pawnforge-save-endpoint').click();
   await page.locator('#pawnforge-approximate').check();

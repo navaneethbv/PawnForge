@@ -17,10 +17,20 @@
     return;
   }
 
+  // A HUD without this world's flag belongs to an orphaned script (for example after the
+  // extension reloads); detaching it makes that instance shut itself down.
+  existingHud?.remove();
+  document.getElementById('pawnforge-style')?.remove();
+  document.querySelectorAll('[data-pawnforge-pointer]').forEach((element) => element.remove());
+
   root.__pawnforge_overlay_loaded = true;
 
   const DEFAULT_ENDPOINT = 'http://127.0.0.1:4173/api/analyze/position';
   const isExtension = Boolean(root.chrome?.runtime?.id);
+  // Reloading or updating the extension orphans this script; its runtime id then disappears.
+  const extensionContextAlive = () => {
+    try { return Boolean(root.chrome?.runtime?.id); } catch (_error) { return false; }
+  };
   const extensionRuntime = isExtension ? root.chrome.runtime : null;
   const extensionStorage = isExtension ? root.chrome.storage?.local : null;
 
@@ -38,10 +48,17 @@
   let observedPositionAt = 0;
   let pageFenPromise = null;
   let pageFenRequestedAt = 0;
+  let pendingForcedAnalysis = false;
+  let pollTimer = 0;
+  let pointerElements = [];
+  // The last analysed position, kept so the next one can be judged as the move that followed it.
+  let previousAnalysis = null;
+  let verdictMarker = null;
 
   const POSITION_STABILITY_MS = 600;
 
   const style = document.createElement('style');
+  style.id = 'pawnforge-style';
   style.textContent = `
     #pawnforge-hud {
       position: fixed;
@@ -115,6 +132,27 @@
     .pawnforge-toggle input:checked + .pawnforge-slider::before { transform: translateX(13px); }
     #pawnforge-hud-body { color: #94a3b8; }
     #pawnforge-hud-msg { min-height: 34px; }
+    #pawnforge-verdict:empty { display: none; }
+    #pawnforge-verdict {
+      margin-bottom: 8px;
+      border-left: 3px solid var(--pawnforge-verdict-color, #4ade80);
+      border-radius: 6px;
+      padding: 6px 8px;
+      background: rgba(255, 255, 255, 0.05);
+      color: #e2e8f0;
+    }
+    .pawnforge-verdict-label { color: var(--pawnforge-verdict-color, #4ade80); font-weight: 700; margin-right: 6px; }
+    .pawnforge-verdict-detail { margin-top: 3px; color: #cbd5e1; font-size: 11px; }
+    .pawnforge-pointer-verdict {
+      border: 3px dashed #f97316;
+      border-radius: 8px;
+      background: rgba(249, 115, 22, 0.22);
+      animation: pawnforge-fade 3.5s ease-out forwards;
+    }
+    @keyframes pawnforge-fade {
+      0%, 70% { opacity: 1; }
+      100% { opacity: 0; }
+    }
     .pawnforge-control-row {
       display: flex;
       align-items: center;
@@ -218,6 +256,7 @@
       </label>
     </div>
     <div id="pawnforge-hud-body">
+      <div id="pawnforge-verdict" role="status" aria-live="polite"></div>
       <div id="pawnforge-hud-msg" role="status" aria-live="polite">Looking for a chess position...</div>
       <label><input id="pawnforge-approximate" type="checkbox" /> Analyze approximate DOM position (special move rights unknown)</label>
       <div id="pawnforge-hud-candidates" class="pawnforge-candidate-list"></div>
@@ -247,6 +286,7 @@
 
   const switchEl = hud.querySelector('#pawnforge-coach-switch');
   const msgEl = hud.querySelector('#pawnforge-hud-msg');
+  const verdictEl = hud.querySelector('#pawnforge-verdict');
   const candidateEl = hud.querySelector('#pawnforge-hud-candidates');
   const sideEl = hud.querySelector('#pawnforge-side');
   const fenEl = hud.querySelector('#pawnforge-fen');
@@ -255,6 +295,7 @@
   const endpointEl = hud.querySelector('#pawnforge-endpoint');
   const saveEndpointEl = hud.querySelector('#pawnforge-save-endpoint');
   const hintEl = hud.querySelector('#pawnforge-hint');
+  const approximateEl = hud.querySelector('#pawnforge-approximate');
   endpointEl.value = endpoint;
 
   function setMessage(text) {
@@ -266,14 +307,23 @@
   }
 
   function removePointers() {
-    document.querySelectorAll('[data-pawnforge-pointer]').forEach((element) => element.remove());
+    pointerElements.forEach((element) => element.remove());
+    pointerElements = [];
     pointerMove = null;
+  }
+
+  function clearVerdict() {
+    verdictEl.replaceChildren();
+    verdictEl.style.removeProperty('--pawnforge-verdict-color');
+    verdictMarker?.remove();
+    verdictMarker = null;
   }
 
   function clearAnalysisUi() {
     activeCandidates = [];
     candidateEl.replaceChildren();
     removePointers();
+    clearVerdict();
   }
 
   function isFenLike(value) {
@@ -384,7 +434,6 @@
   }
 
   function sideFromDom(board) {
-    if (sideMode === 'w' || sideMode === 'b') return sideMode;
     const elements = [board?.element, board?.element?.parentElement, board?.element?.parentElement?.parentElement];
     for (const element of elements) {
       if (!element) continue;
@@ -406,7 +455,49 @@
     return String(value || '').replace(/\s+/g, ' ').trim();
   }
 
-  function sideFromMoveList() {
+  function opposite(color) {
+    return color === 'w' ? 'b' : 'w';
+  }
+
+  // The highlighted ply in a site's move list is the move that produced the shown position.
+  function sideFromSelectedPly() {
+    // chess.com: <div class="node white-move selected"> (the highlight may sit on a child span).
+    for (const element of document.querySelectorAll('.node.selected, .node .selected, [data-node].selected')) {
+      const node = element.closest('.node, [data-node]');
+      const classes = classText(node);
+      if (/\bwhite-move\b|\bwhite\b/.test(classes)) return 'b';
+      if (/\bblack-move\b|\bblack\b/.test(classes)) return 'w';
+    }
+    // lichess: <l4x><i5z>7</i5z><kwdb class="a1t">h4</kwdb>..., analysis: <index>7.</index><move class="active">.
+    const active = document.querySelector('l4x kwdb.a1t, .tview2 move.active');
+    const previous = active?.previousElementSibling;
+    if (previous) {
+      const tag = previous.tagName.toLowerCase();
+      if (tag === 'i5z') return 'b';
+      if (tag === 'kwdb' || tag === 'move') return 'w';
+      if (tag === 'index') return /\.\.\.\s*$/.test(previous.textContent) ? 'w' : 'b';
+    }
+    return null;
+  }
+
+  // Sites highlight the last move's squares; the piece now on them belongs to the side that just moved.
+  function sideFromLastMoveHighlight(board, squares) {
+    const colors = new Set();
+    for (const element of board.element.querySelectorAll('.last-move, .highlight, [class*="last-move" i]')) {
+      let square = explicitSquare(element);
+      if (!square) {
+        const rect = element.getBoundingClientRect();
+        if (rect.width < 4 || rect.height < 4) continue;
+        square = squareFromPoint(board.rect, rect.left + rect.width / 2, rect.top + rect.height / 2, board.orientation);
+      }
+      const piece = squares.get(square);
+      if (piece) colors.add(piece === piece.toUpperCase() ? 'w' : 'b');
+    }
+    // A user-selected square can carry the same class; conflicting colours mean no answer.
+    return colors.size === 1 ? opposite([...colors][0]) : null;
+  }
+
+  function sideFromMoveListText() {
     const rows = [];
     for (const element of document.querySelectorAll('body *')) {
       const text = moveRowText(element.textContent);
@@ -471,9 +562,18 @@
     if (pieceValues.length > 32 || whiteKingCount !== 1 || blackKingCount !== 1 || whitePawnCount > 8 || blackPawnCount > 8) {
       return { board, unstable: true };
     }
-    const side = sideFromDom(board) || sideFromMoveList();
-    if (!side) return { board, sideUnknown: true };
-    return { fen: `${rows.join('/')} ${side} - - 0 1`, board, source: 'approximate visible board', approximate: true };
+    const detectors = [
+      [() => (sideMode === 'w' || sideMode === 'b' ? sideMode : null), 'chosen manually'],
+      [() => sideFromDom(board), 'board attributes'],
+      [sideFromSelectedPly, 'move list'],
+      [() => sideFromLastMoveHighlight(board, squares), 'last-move highlight'],
+      [sideFromMoveListText, 'move list']
+    ];
+    for (const [detect, sideSource] of detectors) {
+      const side = detect();
+      if (side) return { fen: `${rows.join('/')} ${side} - - 0 1`, board, source: 'approximate visible board', approximate: true, sideSource };
+    }
+    return { board, sideUnknown: true };
   }
 
   function readSameWorldFen() {
@@ -489,14 +589,24 @@
   function readPageFen() {
     const sameWorld = readSameWorldFen();
     if (sameWorld || !isExtension || !extensionRuntime?.sendMessage) return Promise.resolve(sameWorld);
+    if (!extensionContextAlive()) {
+      shutdown();
+      return Promise.resolve(null);
+    }
     const now = Date.now();
     if (pageFenPromise && now - pageFenRequestedAt < 900) return pageFenPromise;
     pageFenRequestedAt = now;
     pageFenPromise = new Promise((resolve) => {
-      extensionRuntime.sendMessage({ type: 'read-page-fen' }, (response) => {
-        if (root.chrome.runtime.lastError) resolve(null);
-        else resolve(normaliseFen(response?.fen));
-      });
+      try {
+        extensionRuntime.sendMessage({ type: 'read-page-fen' }, (response) => {
+          if (extensionRuntime.lastError) resolve(null);
+          else resolve(normaliseFen(response?.fen));
+        });
+      } catch (_error) {
+        // sendMessage throws synchronously once the extension context is invalidated.
+        if (!extensionContextAlive()) shutdown();
+        resolve(null);
+      }
     }).finally(() => {
       window.setTimeout(() => { pageFenPromise = null; }, 500);
     });
@@ -525,19 +635,25 @@
     };
   }
 
+  function placeOnSquare(element, rect) {
+    element.style.left = `${rect.left + 2}px`;
+    element.style.top = `${rect.top + 2}px`;
+    element.style.width = `${Math.max(0, rect.width - 4)}px`;
+    element.style.height = `${Math.max(0, rect.height - 4)}px`;
+  }
+
   function updatePointerPositions() {
-    if (!pointerMove) return;
+    if (!pointerMove && !verdictMarker) return;
     const board = findBoardModel();
+    const verdictRect = verdictMarker && squareRect(board, verdictMarker.dataset.square);
+    if (verdictRect) placeOnSquare(verdictMarker, verdictRect);
+    if (!pointerMove) return;
     const origin = squareRect(board, pointerMove.from);
     const target = squareRect(board, pointerMove.to);
-    const originEl = document.querySelector('[data-pawnforge-pointer="origin"]');
-    const targetEl = document.querySelector('[data-pawnforge-pointer="target"]');
+    const [originEl, targetEl] = pointerElements;
     for (const [element, rect] of [[originEl, origin], [targetEl, target]]) {
       if (!element || !rect) continue;
-      element.style.left = `${rect.left + 2}px`;
-      element.style.top = `${rect.top + 2}px`;
-      element.style.width = `${Math.max(0, rect.width - 4)}px`;
-      element.style.height = `${Math.max(0, rect.height - 4)}px`;
+      placeOnSquare(element, rect);
     }
   }
 
@@ -550,6 +666,7 @@
     const target = document.createElement('div');
     target.className = 'pawnforge-pointer pawnforge-pointer-target';
     target.dataset.pawnforgePointer = 'target';
+    pointerElements = [origin, target];
     document.body.append(origin, target);
     updatePointerPositions();
   }
@@ -561,6 +678,132 @@
     if (Math.abs(score) >= 99000) return `${score > 0 ? '' : '-'}#${100000 - Math.abs(score) || ''}`;
     const formatted = (score / 100).toFixed(2);
     return score >= 0 ? `+${formatted}` : formatted;
+  }
+
+  // Mirrors classify() and LOSS_CLAMP_CP in chess-analysis.js so overlay verdicts match game review.
+  const LOSS_CLAMP_CP = 1000;
+  const VERDICT_COLORS = { best: '#4ade80', good: '#4ade80', inaccuracy: '#f59e0b', mistake: '#f97316', blunder: '#ef4444' };
+
+  function classifyLoss(deltaCp) {
+    if (deltaCp <= 20) return { key: 'best', label: 'Best' };
+    if (deltaCp <= 60) return { key: 'good', label: 'Good' };
+    if (deltaCp <= 150) return { key: 'inaccuracy', label: 'Inaccuracy' };
+    if (deltaCp <= 300) return { key: 'mistake', label: 'Mistake' };
+    return { key: 'blunder', label: 'Blunder' };
+  }
+
+  function clampEval(cp) {
+    return Math.max(-LOSS_CLAMP_CP, Math.min(LOSS_CLAMP_CP, cp));
+  }
+
+  function placementSquares(placement) {
+    const squares = new Map();
+    placement.split('/').forEach((row, rowIndex) => {
+      let file = 0;
+      for (const token of row) {
+        if (/\d/.test(token)) file += Number(token);
+        else squares.set(`${String.fromCharCode(97 + file++)}${8 - rowIndex}`, token);
+      }
+    });
+    return squares;
+  }
+
+  function pieceColor(piece) {
+    if (!piece) return null;
+    return piece === piece.toUpperCase() ? 'w' : 'b';
+  }
+
+  // Returns the UCI move that turns `beforeFen` into `afterFen`, or null when the two positions
+  // are not exactly one move apart (history navigation, a skipped ply, or a misread board).
+  function inferPlayedMove(beforeFen, afterFen) {
+    const [beforePlacement, mover] = beforeFen.split(' ');
+    const [afterPlacement, nextSide] = afterFen.split(' ');
+    if (nextSide !== opposite(mover)) return null;
+    const before = placementSquares(beforePlacement);
+    const after = placementSquares(afterPlacement);
+    const vacated = [];
+    const arrived = [];
+    let capturedElsewhere = 0;
+    for (let rank = 1; rank <= 8; rank += 1) {
+      for (let file = 0; file < 8; file += 1) {
+        const square = `${String.fromCharCode(97 + file)}${rank}`;
+        const was = before.get(square);
+        const now = after.get(square);
+        if (was === now) continue;
+        if (pieceColor(was) === mover) vacated.push(square);
+        if (pieceColor(now) === mover) arrived.push(square);
+        else if (now) return null;
+        else if (pieceColor(was) !== mover) capturedElsewhere += 1;
+      }
+    }
+    if (capturedElsewhere > 1) return null;
+    if (vacated.length === 1 && arrived.length === 1) {
+      const [from] = vacated;
+      const [to] = arrived;
+      const moved = before.get(from);
+      const landed = after.get(to);
+      if (moved === landed) return capturedElsewhere && moved.toLowerCase() !== 'p' ? null : `${from}${to}`;
+      const promotes = moved.toLowerCase() === 'p' && /[18]$/.test(to) && !capturedElsewhere;
+      return promotes ? `${from}${to}${landed.toLowerCase()}` : null;
+    }
+    if (vacated.length === 2 && arrived.length === 2 && !capturedElsewhere) {
+      const kingFrom = vacated.find((square) => before.get(square)?.toLowerCase() === 'k');
+      const kingTo = arrived.find((square) => after.get(square)?.toLowerCase() === 'k');
+      const rookMoved = vacated.some((square) => before.get(square)?.toLowerCase() === 'r');
+      if (kingFrom && kingTo && rookMoved) return `${kingFrom}${kingTo}`;
+    }
+    return null;
+  }
+
+  // Scores the move that led to `snapshot` against the best move found in the previous position.
+  function judgePlayedMove(previous, snapshot, data) {
+    const uci = inferPlayedMove(previous.fen, snapshot.fen);
+    const best = previous.topMoves[0];
+    if (!uci || !Number.isFinite(Number(best?.evalCp))) return null;
+    const listed = previous.topMoves.find((move) => move.uci === uci);
+    let playedCp = Number(listed?.evalCp);
+    if (!listed) {
+      // Evals are from the side to move, so the reply's best score negated is the mover's score.
+      const reply = Number(data.topMoves?.[0]?.evalCp ?? data.bestEvalCp);
+      if (!Number.isFinite(reply)) return null;
+      playedCp = -reply;
+    }
+    const bestCp = Number(best.evalCp);
+    const deltaCp = Math.max(0, clampEval(bestCp) - clampEval(playedCp));
+    const category = uci === best.uci ? classifyLoss(0) : classifyLoss(deltaCp);
+    return { uci, mover: previous.fen.split(' ')[1], category, best, bestCp, playedCp };
+  }
+
+  function renderVerdict(verdict) {
+    clearVerdict();
+    if (!verdict) return;
+    const moveText = `${verdict.uci.slice(0, 2).toUpperCase()}➜${verdict.uci.slice(2, 4).toUpperCase()}`;
+    const moverName = verdict.mover === 'b' ? 'Black' : 'White';
+    verdictEl.style.setProperty('--pawnforge-verdict-color', VERDICT_COLORS[verdict.category.key]);
+    const headline = document.createElement('div');
+    const label = document.createElement('span');
+    label.className = 'pawnforge-verdict-label';
+    const serious = ['inaccuracy', 'mistake', 'blunder'].includes(verdict.category.key);
+    label.textContent = serious ? `⚠ ${verdict.category.label}` : verdict.category.label;
+    headline.append(label, `${moverName} played ${moveText}`);
+    verdictEl.append(headline);
+    if (!serious) return;
+    const detail = document.createElement('div');
+    detail.className = 'pawnforge-verdict-detail';
+    const bestText = `${verdict.best.uci.slice(0, 2).toUpperCase()}➜${verdict.best.uci.slice(2, 4).toUpperCase()}`;
+    detail.textContent = `${moverName}'s eval ${formatEvaluation(verdict.bestCp)} → ${formatEvaluation(verdict.playedCp)}. Better was ${bestText}.`;
+    verdictEl.append(detail);
+    if (verdict.category.key === 'inaccuracy') return;
+    verdictMarker = document.createElement('div');
+    verdictMarker.className = 'pawnforge-pointer pawnforge-pointer-verdict';
+    verdictMarker.dataset.pawnforgePointer = 'verdict';
+    verdictMarker.dataset.square = verdict.uci.slice(2, 4);
+    verdictMarker.addEventListener('animationend', () => {
+      verdictMarker?.remove();
+      verdictMarker = null;
+    }, { once: true });
+    document.body.append(verdictMarker);
+    updatePointerPositions();
   }
 
   function pieceNameAt(fen, square) {
@@ -627,10 +870,16 @@
     if (activeCandidates.length) selectCandidate(0);
   }
 
-  async function analyzePosition(force = false) {
+  async function analyzePosition(force = false, { optIn = false } = {}) {
     if (!active) return;
     if (analysisInFlight) {
-      if (force) { analysisRequest += 1; analysisController?.abort(); lastPositionKey = ''; }
+      if (force) {
+        analysisRequest += 1;
+        analysisController?.abort();
+        lastPositionKey = '';
+        // Re-run once the superseded request settles so a click is never silently dropped.
+        pendingForcedAnalysis = true;
+      }
       return;
     }
     const requestId = ++analysisRequest;
@@ -660,12 +909,20 @@
       return;
     }
 
-    if (snapshot.approximate && !hud.querySelector('#pawnforge-approximate').checked) {
-      lastPositionKey = '';
-      clearAnalysisUi();
-      setMessage('Board found. Paste a full FEN for accurate analysis.');
-      setHint('DOM pieces do not reveal castling, en passant, or draw counters. Approximate analysis requires opting in.');
-      return;
+    if (snapshot.approximate && !approximateEl.checked) {
+      if (optIn) {
+        // Pressing Analyze on a DOM-only board is an explicit request for approximate analysis.
+        approximateEl.checked = true;
+        editedSettings.add('approximate');
+        persistSettings();
+      } else {
+        lastPositionKey = '';
+        currentSnapshot = snapshot;
+        clearAnalysisUi();
+        setMessage('Board found. Press Analyze to use the visible pieces, or paste a full FEN.');
+        setHint('DOM pieces do not reveal castling, en passant, or draw counters, so live analysis waits for you to opt in.');
+        return;
+      }
     }
     const now = Date.now();
     if (!force) {
@@ -700,6 +957,10 @@
       const payload = { fen: snapshot.fen, settings: { depth: 8, multiPv: 3 } };
       let data;
       if (isExtension) {
+        if (!extensionContextAlive()) {
+          shutdown();
+          return;
+        }
         const result = await extensionRuntime.sendMessage({ type: 'analyze-position', endpoint, payload });
         if (result?.error) throw new Error(result.error);
         data = result.data;
@@ -723,13 +984,23 @@
         window.setTimeout(() => analyzePosition(false), POSITION_STABILITY_MS + 25);
         return;
       }
-      if (!Array.isArray(data.topMoves) || data.topMoves.length === 0) {
+      const verdict = previousAnalysis && judgePlayedMove(previousAnalysis, snapshot, data);
+      const hasMoves = Array.isArray(data.topMoves) && data.topMoves.length > 0;
+      previousAnalysis = hasMoves ? { fen: snapshot.fen, topMoves: data.topMoves } : null;
+      if (!hasMoves) {
         setMessage('The engine returned no legal moves for this position.');
+        renderVerdict(verdict);
         return;
       }
       renderCandidates(data.topMoves);
-      setHint(snapshot.approximate ? 'Approximate: castling and en passant disabled; draw counters unknown. Paste a full FEN for accurate results.' : `Source: ${snapshot.source || 'position'}. Select a line to move the highlights.`);
+      renderVerdict(verdict);
+      const turn = snapshot.fen.split(' ')[1] === 'b' ? 'Black' : 'White';
+      setHint(snapshot.approximate ? `Approximate: ${turn} to move (${snapshot.sideSource}); castling and en passant disabled; draw counters unknown. Paste a full FEN for accurate results.` : `Source: ${snapshot.source || 'position'}. Select a line to move the highlights.`);
     } catch (error) {
+      if (isExtension && !extensionContextAlive()) {
+        shutdown();
+        return;
+      }
       if (error?.name === 'AbortError' || requestId !== analysisRequest) return;
       lastPositionKey = '';
       clearAnalysisUi();
@@ -737,6 +1008,10 @@
       setHint(error?.message || endpoint);
     } finally {
       analysisInFlight = false;
+      if (pendingForcedAnalysis && active) {
+        pendingForcedAnalysis = false;
+        analyzePosition(true);
+      }
     }
   }
 
@@ -746,12 +1021,13 @@
   async function loadSettings() {
     if (!extensionStorage) return;
     try {
-      const stored = await extensionStorage.get(['endpoint', 'sideMode']);
+      const stored = await extensionStorage.get(['endpoint', 'sideMode', 'approximate']);
       if (typeof stored.endpoint === 'string' && !editedSettings.has('endpoint')) {
         const url = new URL(stored.endpoint);
         if (url.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(url.hostname) && !url.username && !url.password && url.pathname === '/api/analyze/position') endpoint = url.toString();
       }
       if (!editedSettings.has('sideMode') && (stored.sideMode === 'w' || stored.sideMode === 'b' || stored.sideMode === 'auto')) sideMode = stored.sideMode;
+      if (!editedSettings.has('approximate') && typeof stored.approximate === 'boolean') approximateEl.checked = stored.approximate;
       sideEl.value = sideMode;
       if (!editedSettings.has('endpointField')) endpointEl.value = endpoint;
     } catch (_error) {
@@ -760,8 +1036,49 @@
   }
 
   function persistSettings() {
-    if (!extensionStorage) return;
-    extensionStorage.set({ endpoint, sideMode }).catch(() => {});
+    if (!extensionStorage || !extensionContextAlive()) return;
+    try {
+      extensionStorage.set({ endpoint, sideMode, approximate: approximateEl.checked }).catch(() => {});
+    } catch (_error) {
+      // The extension was reloaded; the next poll shuts this orphaned instance down.
+    }
+  }
+
+  function onViewportChange() {
+    updatePointerPositions();
+  }
+
+  function onMouseMove(event) {
+    if (!dragging) return;
+    hud.style.left = `${dragInitialLeft + event.clientX - dragStartX}px`;
+    hud.style.top = `${dragInitialTop + event.clientY - dragStartY}px`;
+    hud.style.right = 'auto';
+    hud.style.bottom = 'auto';
+  }
+
+  function onMouseUp() {
+    dragging = false;
+  }
+
+  // Stops an instance whose extension context died or whose HUD was replaced by a newer instance.
+  function shutdown() {
+    if (!pollTimer && !hud.isConnected) return;
+    active = false;
+    analysisRequest += 1;
+    analysisController?.abort();
+    window.clearInterval(pollTimer);
+    pollTimer = 0;
+    window.removeEventListener('mousemove', onMouseMove);
+    window.removeEventListener('mouseup', onMouseUp);
+    window.removeEventListener('scroll', onViewportChange);
+    window.removeEventListener('resize', onViewportChange);
+    removePointers();
+    clearVerdict();
+    if (hud.isConnected) {
+      hud.remove();
+      style.remove();
+      root.__pawnforge_overlay_loaded = false;
+    }
   }
 
   function setActive(next) {
@@ -770,6 +1087,7 @@
     if (!active) {
       analysisRequest += 1;
       if (analysisController) analysisController.abort();
+      previousAnalysis = null;
       clearAnalysisUi();
       setMessage('Coach assistance is off.');
       setHint('Turn Coach on to resume position detection.');
@@ -780,7 +1098,12 @@
     analyzePosition(true);
   }
 
-  hud.querySelector('#pawnforge-approximate').addEventListener('change', () => { lastPositionKey = ''; analyzePosition(true); });
+  approximateEl.addEventListener('change', () => {
+    editedSettings.add('approximate');
+    persistSettings();
+    lastPositionKey = '';
+    analyzePosition(true);
+  });
   switchEl.addEventListener('change', () => setActive(switchEl.checked));
   sideEl.addEventListener('change', () => {
     sideMode = sideEl.value;
@@ -789,7 +1112,7 @@
     lastPositionKey = '';
     analyzePosition(true);
   });
-  analyzeEl.addEventListener('click', () => analyzePosition(true));
+  analyzeEl.addEventListener('click', () => analyzePosition(true, { optIn: true }));
   useFenEl.addEventListener('click', () => {
     const value = normaliseFen(fenEl.value);
     if (!value) {
@@ -835,16 +1158,10 @@
     dragInitialTop = rect.top;
     event.preventDefault();
   });
-  window.addEventListener('mousemove', (event) => {
-    if (!dragging) return;
-    hud.style.left = `${dragInitialLeft + event.clientX - dragStartX}px`;
-    hud.style.top = `${dragInitialTop + event.clientY - dragStartY}px`;
-    hud.style.right = 'auto';
-    hud.style.bottom = 'auto';
-  });
-  window.addEventListener('mouseup', () => { dragging = false; });
-  window.addEventListener('scroll', updatePointerPositions, { passive: true });
-  window.addEventListener('resize', updatePointerPositions, { passive: true });
+  window.addEventListener('mousemove', onMouseMove);
+  window.addEventListener('mouseup', onMouseUp);
+  window.addEventListener('scroll', onViewportChange, { passive: true });
+  window.addEventListener('resize', onViewportChange, { passive: true });
 
   if (extensionRuntime?.onMessage) {
     extensionRuntime.onMessage.addListener((message) => {
@@ -853,5 +1170,8 @@
   }
 
   loadSettings().finally(() => analyzePosition(true));
-  window.setInterval(() => analyzePosition(false), 1500);
+  pollTimer = window.setInterval(() => {
+    if (!hud.isConnected || (isExtension && !extensionContextAlive())) shutdown();
+    else analyzePosition(false);
+  }, 1500);
 })();

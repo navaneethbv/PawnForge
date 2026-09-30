@@ -47,7 +47,6 @@
   let observedPositionKey = '';
   let observedPositionAt = 0;
   let pageFenPromise = null;
-  let pageFenRequestedAt = 0;
   let pendingForcedAnalysis = false;
   let pollTimer = 0;
   let pointerElements = [];
@@ -55,7 +54,10 @@
   let previousAnalysis = null;
   let verdictMarker = null;
 
-  const POSITION_STABILITY_MS = 600;
+  // A position must read the same on two consecutive polls before it is analysed, which skips
+  // mid-animation frames while keeping move-to-analysis latency well under half a second.
+  const POLL_INTERVAL_MS = 250;
+  const POSITION_STABILITY_MS = 200;
 
   const style = document.createElement('style');
   style.id = 'pawnforge-style';
@@ -593,9 +595,8 @@
       shutdown();
       return Promise.resolve(null);
     }
-    const now = Date.now();
-    if (pageFenPromise && now - pageFenRequestedAt < 900) return pageFenPromise;
-    pageFenRequestedAt = now;
+    // Share only an in-flight read; a cached result would hide moves from the next poll.
+    if (pageFenPromise) return pageFenPromise;
     pageFenPromise = new Promise((resolve) => {
       try {
         extensionRuntime.sendMessage({ type: 'read-page-fen' }, (response) => {
@@ -608,7 +609,7 @@
         resolve(null);
       }
     }).finally(() => {
-      window.setTimeout(() => { pageFenPromise = null; }, 500);
+      pageFenPromise = null;
     });
     return pageFenPromise;
   }
@@ -1173,5 +1174,5 @@
   pollTimer = window.setInterval(() => {
     if (!hud.isConnected || (isExtension && !extensionContextAlive())) shutdown();
     else analyzePosition(false);
-  }, 1500);
+  }, POLL_INTERVAL_MS);
 })();

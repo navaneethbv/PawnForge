@@ -83,6 +83,23 @@ test('pressing Analyze on a DOM-only board opts into approximate analysis', asyn
   expect(fens.at(-1)).toBe(blackToMove);
 });
 
+test('a move on the board is re-analysed within a second', async ({ page }) => {
+  const fens = await routeAnalysis(page);
+  await chessComFixture(page);
+  await injectOverlay(page);
+  await page.locator('#pawnforge-approximate').check();
+  await expect(page.locator('#pawnforge-hud-candidates button').first()).toBeVisible();
+  const requestsBefore = fens.length;
+  // Black answers 7...h6: the h7 pawn moves to h6.
+  await page.evaluate(() => {
+    const pawn = document.querySelector('.piece.square-87');
+    pawn.classList.replace('square-87', 'square-86');
+    pawn.style.top = '120px';
+  });
+  await expect.poll(() => fens.length, { timeout: 1000 }).toBeGreaterThan(requestsBefore);
+  expect(fens.at(-1).split(' ')[0]).toBe('r2qkb1r/pp1nnpp1/2p1p2p/3pPb2/3P3P/2PB1N2/PP3PP1/RNBQK2R');
+});
+
 test('an overlay whose extension context is invalidated shuts down without unhandled errors', async ({ page }) => {
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));

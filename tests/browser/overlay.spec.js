@@ -279,7 +279,8 @@ test('the minimized overlay keeps analysing and shows the suggested move', async
   const expand = page.getByRole('button', { name: 'Expand PawnForge Coach' });
   await expect(expand).toHaveAttribute('aria-expanded', 'false');
   await expect(page.locator('#pawnforge-hud-body')).toBeHidden();
-  await expect(page.locator('#pawnforge-mini-summary')).toHaveText('H7➜H6 -0.20');
+  // Black to move: the engine's -0.20 for Black is +0.20 from White's view, like the site's eval bar.
+  await expect(page.locator('#pawnforge-mini-summary')).toHaveText('H7➜H6 +0.20');
   await expect(page.locator('[data-pawnforge-pointer]').first()).toBeVisible();
 
   // A move on the board is still analysed while minimized.
@@ -347,4 +348,77 @@ test('minimized and weaker-move settings are saved in extension storage', async 
   await expect(page.locator('#pawnforge-weaker')).toBeChecked();
   await page.locator('#pawnforge-weaker').uncheck();
   await expect.poll(() => page.evaluate(() => window.saved)).toMatchObject({ minimized: false, weaker: false });
+  // The side to move changes every move, so a manual choice is never saved.
+  expect(await page.evaluate(() => 'sideMode' in window.saved)).toBe(false);
+});
+
+// Mirrors a lichess game seen from Black: chessground pieces are positioned by transform inside
+// cg-board, the flip marker sits on the enclosing cg-wrap, a drag "ghost" piece lives outside
+// cg-board, and a mini game board elsewhere on the page has its own pieces.
+async function lichessBlackFixture(page) {
+  await page.setContent(`<!doctype html><html><body style="margin:0">
+    <div class="round__app__board main-board" style="position:relative;width:480px;height:480px">
+      <div class="cg-wrap orientation-black manipulable" style="width:480px;height:480px">
+        <cg-container style="display:block;position:relative;width:480px;height:480px">
+          <cg-board style="display:block;position:absolute;inset:0"></cg-board>
+          <piece class="ghost white pawn" style="position:absolute;width:60px;height:60px;visibility:hidden"></piece>
+        </cg-container>
+      </div>
+    </div>
+    <div class="rclock rclock-bottom rclock-black">1:00</div><div class="rclock rclock-top rclock-white running">1:00</div>
+    <a class="mini-game"><div class="cg-wrap orientation-black" style="width:200px;height:200px">
+      <cg-container style="display:block;position:relative;width:200px;height:200px"><cg-board style="display:block;position:absolute;inset:0">
+        <piece class="white king" style="position:absolute;width:25px;height:25px;transform:translate(0px,0px)"></piece>
+        <piece class="black king" style="position:absolute;width:25px;height:25px;transform:translate(100px,100px)"></piece>
+      </cg-board></cg-container></div></a>
+  </body></html>`);
+  await page.evaluate((placement) => {
+    const board = document.querySelector('.main-board cg-board');
+    const names = { p: 'pawn', n: 'knight', b: 'bishop', r: 'rook', q: 'queen', k: 'king' };
+    placement.split('/').forEach((row, rowIndex) => {
+      let file = 0;
+      for (const token of row) {
+        if (/\d/.test(token)) { file += Number(token); continue; }
+        const rank = 8 - rowIndex;
+        const piece = document.createElement('piece');
+        piece.className = `${token === token.toUpperCase() ? 'white' : 'black'} ${names[token.toLowerCase()]}`;
+        // Seen from Black, h1 is top-left and a8 is bottom-right.
+        piece.style.cssText = `position:absolute;width:60px;height:60px;transform:translate(${(7 - file) * 60}px,${(rank - 1) * 60}px)`;
+        board.appendChild(piece);
+        file += 1;
+      }
+    });
+  }, start.split(' ')[0]);
+}
+
+test('a lichess board seen from Black is read the right way up', async ({ page }) => {
+  const fens = await routeAnalysis(page);
+  await lichessBlackFixture(page);
+  await injectOverlay(page);
+  await page.locator('#pawnforge-approximate').check();
+  await expect(page.locator('#pawnforge-hud-candidates button').first()).toBeVisible();
+  // White pawns on rank 2 and Black pawns on rank 7, White to move from the running clock.
+  expect(fens.at(-1)).toBe(`${start.split(' ')[0]} w - - 0 1`);
+  await expect(page.locator('#pawnforge-hint')).toContainText('White to move (running clock)');
+});
+
+test('a manual side applies to one position and returns to auto detect after a move', async ({ page }) => {
+  const fens = await routeAnalysis(page);
+  await chessComFixture(page);
+  await injectOverlay(page);
+  await page.locator('#pawnforge-approximate').check();
+  await expect.poll(() => fens.at(-1)).toBe(blackToMove);
+
+  await page.locator('#pawnforge-side').selectOption('w');
+  await expect.poll(() => fens.at(-1)).toBe(`${board} w - - 0 1`);
+  await expect(page.locator('#pawnforge-hint')).toContainText('chosen manually');
+
+  await page.evaluate(() => {
+    const pawn = document.querySelector('.piece.square-87');
+    pawn.classList.replace('square-87', 'square-86');
+    pawn.style.top = '120px';
+  });
+  await expect(page.locator('#pawnforge-side')).toHaveValue('auto');
+  await expect.poll(() => fens.at(-1)).toBe('r2qkb1r/pp1nnpp1/2p1p2p/3pPb2/3P3P/2PB1N2/PP3PP1/RNBQK2R b - - 0 1');
+  await expect(page.locator('#pawnforge-hint')).not.toContainText('chosen manually');
 });

@@ -37,6 +37,8 @@
   let active = true;
   let endpoint = DEFAULT_ENDPOINT;
   let sideMode = 'auto';
+  // Board placement a manual side choice was made for; the side to move changes after every move.
+  let manualSidePlacement = null;
   // Engine search depth; higher is stronger but slower.
   const DEPTH_CHOICES = [8, 12, 16, 20];
   let depth = DEPTH_CHOICES[0];
@@ -67,6 +69,8 @@
   // A position must read the same on two consecutive polls before it is analysed, which skips
   // mid-animation frames while keeping move-to-analysis latency well under half a second.
   const POLL_INTERVAL_MS = 250;
+  // Board piece elements; lichess's drag "ghost" copy of a piece is not on the board.
+  const PIECE_SELECTOR = '.piece:not(.ghost), piece:not(.ghost), [data-piece]:not(.ghost), [data-color][data-type]:not(.ghost)';
   const POSITION_STABILITY_MS = 200;
 
   const style = document.createElement('style');
@@ -309,7 +313,7 @@
       <div id="pawnforge-hud-msg" role="status" aria-live="polite">Looking for a chess position...</div>
       <label><input id="pawnforge-approximate" type="checkbox" /> Analyze approximate DOM position (special move rights unknown)</label>
       <label title="Suggest a move that gives up some advantage (an inaccuracy), never a mistake or blunder"><input id="pawnforge-weaker" type="checkbox" /> Suggest weaker moves</label>
-      <div id="pawnforge-hud-candidates" class="pawnforge-candidate-list"></div>
+      <div id="pawnforge-hud-candidates" class="pawnforge-candidate-list" title="Evaluations are from White's point of view, like the lichess and chess.com eval bars"></div>
       <div class="pawnforge-control-row">
         <label for="pawnforge-side">Side</label>
         <select id="pawnforge-side" aria-label="Side to move">
@@ -457,9 +461,15 @@
     }
     const scored = candidates.map((candidate) => ({
       ...candidate,
-      pieceCount: candidate.element.querySelectorAll('.piece, piece, [data-piece], [data-color][data-type]').length
+      pieceCount: candidate.element.querySelectorAll(PIECE_SELECTOR).length
     }));
-    const selected = scored.sort((a, b) => b.pieceCount - a.pieceCount || a.area - b.area)[0];
+    // A wrapper around a board holds the same pieces; keep the innermost element so the board's own
+    // orientation markers (lichess: cg-wrap.orientation-black around cg-board) apply.
+    const innermost = scored.filter((outer) => !scored.some((inner) => (
+      inner !== outer && outer.element.contains(inner.element) && inner.pieceCount >= outer.pieceCount
+    )));
+    // Several boards (lichess mini games beside the main one): the most pieces, then the largest board.
+    const selected = innermost.sort((a, b) => b.pieceCount - a.pieceCount || b.area - a.area)[0];
     return selected ? { ...selected, orientation: boardOrientation(selected.element) } : null;
   }
 
@@ -578,10 +588,9 @@
   function readDomPosition() {
     const board = findBoardModel();
     if (!board) return null;
-    const pieceSelectors = ['.piece', 'piece', '[data-piece]', '[data-color][data-type]'];
     const pieces = [];
     const seen = new Set();
-    for (const selector of pieceSelectors) {
+    for (const selector of PIECE_SELECTOR.split(', ')) {
       for (const element of board.element.querySelectorAll(selector)) {
         if (seen.has(element)) continue;
         seen.add(element);
@@ -627,7 +636,7 @@
       return { board, unstable: true };
     }
     const detectors = [
-      [() => (sideMode === 'w' || sideMode === 'b' ? sideMode : null), 'chosen manually'],
+      [() => manualSideFor(rows.join('/')), 'chosen manually'],
       [() => sideFromDom(board), 'board attributes'],
       [sideFromSelectedPly, 'move list'],
       [() => sideFromLastMoveHighlight(board, squares), 'last-move highlight'],
@@ -639,6 +648,18 @@
       if (side) return { fen: `${rows.join('/')} ${side} - - 0 1`, board, source: 'approximate visible board', approximate: true, sideSource };
     }
     return { board, sideUnknown: true };
+  }
+
+  // A manual side applies to the position it was chosen for; once a move changes the board,
+  // detection returns to Auto because the chosen side would now be the wrong one.
+  function manualSideFor(placement) {
+    if (sideMode !== 'w' && sideMode !== 'b') return null;
+    manualSidePlacement ??= placement;
+    if (manualSidePlacement === placement) return sideMode;
+    sideMode = 'auto';
+    sideEl.value = 'auto';
+    manualSidePlacement = null;
+    return null;
   }
 
   // lichess (live games): the running clock belongs to the side to move.
@@ -743,6 +764,16 @@
     pointerElements = [origin, target];
     document.body.append(origin, target);
     updatePointerPositions();
+  }
+
+  // Engine scores are from the side to move; show them from White's view like the sites' eval bars.
+  function whiteView(value, sideToMove) {
+    const score = Number(value);
+    return sideToMove === 'b' ? -score : score;
+  }
+
+  function currentSideToMove() {
+    return (currentSnapshot?.fen || '').split(' ')[1] === 'b' ? 'b' : 'w';
   }
 
   function formatEvaluation(value) {
@@ -865,7 +896,9 @@
     const detail = document.createElement('div');
     detail.className = 'pawnforge-verdict-detail';
     const bestText = `${verdict.best.uci.slice(0, 2).toUpperCase()}➜${verdict.best.uci.slice(2, 4).toUpperCase()}`;
-    detail.textContent = `${moverName}'s eval ${formatEvaluation(verdict.bestCp)} → ${formatEvaluation(verdict.playedCp)}. Better was ${bestText}.`;
+    const bestWhite = formatEvaluation(whiteView(verdict.bestCp, verdict.mover));
+    const playedWhite = formatEvaluation(whiteView(verdict.playedCp, verdict.mover));
+    detail.textContent = `Eval ${bestWhite} → ${playedWhite} (White's view). Better was ${bestText}.`;
     verdictEl.append(detail);
     if (verdict.category.key === 'inaccuracy') return;
     verdictMarker = document.createElement('div');
@@ -917,7 +950,7 @@
     move.textContent = `${from} ➜ ${to}`;
     const evaluation = document.createElement('span');
     evaluation.className = 'pawnforge-eval-tag';
-    evaluation.textContent = formatEvaluation(candidate.evalCp);
+    evaluation.textContent = formatEvaluation(whiteView(candidate.evalCp, currentSideToMove()));
     summary.append(move, evaluation);
     const explanation = document.createElement('div');
     explanation.style.cssText = 'margin-top:6px;color:#cbd5e1;font-size:11px;';
@@ -964,7 +997,7 @@
     const move = `${candidate.uci.slice(0, 2).toUpperCase()}➜${candidate.uci.slice(2, 4).toUpperCase()}`;
     const verdictLabel = verdictEl.querySelector('.pawnforge-verdict-label')?.textContent;
     const verdictSuffix = verdictLabel ? ` · ${verdictLabel}` : '';
-    miniSummaryEl.textContent = `${move} ${formatEvaluation(candidate.evalCp)}${verdictSuffix}`;
+    miniSummaryEl.textContent = `${move} ${formatEvaluation(whiteView(candidate.evalCp, currentSideToMove()))}${verdictSuffix}`;
   }
 
   function renderCandidates(candidates) {
@@ -983,7 +1016,7 @@
       move.textContent = `${candidate.uci.slice(0, 2).toUpperCase()} ➜ ${candidate.uci.slice(2, 4).toUpperCase()}`;
       const evaluation = document.createElement('span');
       evaluation.className = 'pawnforge-candidate-eval';
-      evaluation.textContent = formatEvaluation(candidate.evalCp);
+      evaluation.textContent = formatEvaluation(whiteView(candidate.evalCp, currentSideToMove()));
       pill.append(rank, move, evaluation);
       if (weakerEl.checked && index === suggested && index > 0) {
         const note = document.createElement('span');
@@ -1171,18 +1204,16 @@
   async function loadSettings() {
     if (!extensionStorage) return;
     try {
-      const stored = await extensionStorage.get(['endpoint', 'sideMode', 'approximate', 'depth', 'weaker', 'minimized']);
+      const stored = await extensionStorage.get(['endpoint', 'approximate', 'depth', 'weaker', 'minimized']);
       // A stored value applies only when it is valid and the user has not changed that setting meanwhile.
       const apply = (key, isValid, set) => {
         if (!editedSettings.has(key) && isValid(stored[key])) set(stored[key]);
       };
       apply('endpoint', (value) => typeof value === 'string' && parseLocalEndpoint(value) !== null, (value) => { endpoint = parseLocalEndpoint(value).toString(); });
-      apply('sideMode', (value) => ['w', 'b', 'auto'].includes(value), (value) => { sideMode = value; });
       apply('approximate', isBoolean, (value) => { approximateEl.checked = value; });
       apply('weaker', isBoolean, (value) => { weakerEl.checked = value; });
       apply('minimized', isBoolean, setMinimized);
       apply('depth', (value) => DEPTH_CHOICES.includes(value), (value) => { depth = value; });
-      sideEl.value = sideMode;
       depthEl.value = String(depth);
       if (!editedSettings.has('endpointField')) endpointEl.value = endpoint;
     } catch (_error) {
@@ -1193,7 +1224,7 @@
   function persistSettings() {
     if (!extensionStorage || !extensionContextAlive()) return;
     try {
-      extensionStorage.set({ endpoint, sideMode, depth, minimized, approximate: approximateEl.checked, weaker: weakerEl.checked }).catch(() => {});
+      extensionStorage.set({ endpoint, depth, minimized, approximate: approximateEl.checked, weaker: weakerEl.checked }).catch(() => {});
     } catch (_error) {
       // The extension was reloaded; the next poll shuts this orphaned instance down.
     }
@@ -1273,7 +1304,7 @@
   });
   sideEl.addEventListener('change', () => {
     sideMode = sideEl.value;
-    editedSettings.add('sideMode');
+    manualSidePlacement = null;
     persistSettings();
     lastPositionKey = '';
     void analyzePosition(true);

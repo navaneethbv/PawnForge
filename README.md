@@ -207,7 +207,8 @@ The Depth selector trades speed for strength (8 to 20).
 The overlay lists the engine's five best moves, best first, and the minimize button collapses it to a one-line bar that keeps analysing and shows the suggested move.
 **Suggest weaker moves** recommends a line that gives up about 0.4 to 1.5 pawns against the best move (an inaccuracy), never a mistake or blunder; when no line qualifies it suggests the best move.
 Paste a complete six-field FEN for accurate analysis when the page does not expose one.
-The Side selector is available for approximate DOM analysis.
+The Side selector overrides the side to move for approximate DOM analysis; it applies to the current position only and returns to Auto detect after the next move.
+Overlay evaluations are shown from White's point of view, like the lichess and chess.com eval bars.
 Canvas-only boards need a page FEN or manual FEN.
 The API field supports a different local server port.
 

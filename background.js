@@ -48,6 +48,7 @@ function readFenFromPage() {
       const board = document.querySelector('wc-chess-board, chess-board');
       return typeof board?.game?.getFEN === 'function' ? board.game.getFEN() : null;
     } catch (_error) {
+      // The site's board object can throw mid-update; the other sources below still apply.
       return null;
     }
   };
@@ -60,7 +61,7 @@ function readFenFromPage() {
     // lichess analysis board: <div class="pair"><label>FEN</label><input class="copyable" value="...">
     ...[...document.querySelectorAll('.pair input.copyable')].map((input) => input.value)
   ];
-  return values.find((value) => typeof value === 'string' && /^\S+(?:\/\S+){7} [wb] /.test(value.trim())) || null;
+  return values.find((value) => typeof value === 'string' && /^[^\s/]+(?:\/[^\s/]+){7} [wb] /.test(value.trim())) || null;
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {

@@ -1035,7 +1035,7 @@
       analysisInFlight = false;
       if (pendingForcedAnalysis && active) {
         pendingForcedAnalysis = false;
-        analyzePosition(true);
+        void analyzePosition(true);
       }
     }
   }
@@ -1122,14 +1122,14 @@
     }
     lastPositionKey = '';
     setMessage('Coach is on. Looking for a chess position...');
-    analyzePosition(true);
+    void analyzePosition(true);
   }
 
   approximateEl.addEventListener('change', () => {
     editedSettings.add('approximate');
     persistSettings();
     lastPositionKey = '';
-    analyzePosition(true);
+    void analyzePosition(true);
   });
   switchEl.addEventListener('change', () => setActive(switchEl.checked));
   sideEl.addEventListener('change', () => {
@@ -1137,7 +1137,7 @@
     editedSettings.add('sideMode');
     persistSettings();
     lastPositionKey = '';
-    analyzePosition(true);
+    void analyzePosition(true);
   });
   depthEl.addEventListener('change', () => {
     const value = Number(depthEl.value);
@@ -1148,7 +1148,7 @@
     // Evaluations from different depths are not comparable, so start a fresh move history.
     previousAnalysis = null;
     lastPositionKey = '';
-    analyzePosition(true);
+    void analyzePosition(true);
   });
   analyzeEl.addEventListener('click', () => analyzePosition(true, { optIn: true }));
   useFenEl.addEventListener('click', () => {
@@ -1158,7 +1158,7 @@
       return;
     }
     fenEl.value = value;
-    analyzePosition(true);
+    void analyzePosition(true);
   });
   endpointEl.addEventListener('input', () => editedSettings.add('endpointField'));
   saveEndpointEl.addEventListener('click', () => {
@@ -1171,7 +1171,7 @@
       persistSettings();
       lastPositionKey = '';
       setMessage('API endpoint saved.');
-      analyzePosition(true);
+      void analyzePosition(true);
     } catch (error) {
       setMessage(error?.message || 'Enter a valid API endpoint.');
     }
@@ -1207,9 +1207,9 @@
     });
   }
 
-  loadSettings().finally(() => analyzePosition(true));
+  void loadSettings().finally(() => { void analyzePosition(true); });
   pollTimer = window.setInterval(() => {
     if (!hud.isConnected || (isExtension && !extensionContextAlive())) shutdown();
-    else analyzePosition(false);
+    else void analyzePosition(false);
   }, POLL_INTERVAL_MS);
 })();

@@ -15,18 +15,23 @@ function checkStatus(response, site) {
   if (!response.ok) throw new ImportError(`${site} returned HTTP ${response.status}.`);
 }
 
-function pgnHeader(pgn, name) {
-  const match = pgn.match(new RegExp(`^\\[${name} "([^"]*)"\\]`, 'm'));
-  return match ? match[1] : '';
+// PGN tag pairs, e.g. [White "alice"], one per line.
+const PGN_TAG = /^\[(\w+) "([^"]*)"\]/gm;
+
+function pgnHeaders(pgn) {
+  const headers = new Map();
+  for (const [, name, value] of pgn.matchAll(PGN_TAG)) headers.set(name, value);
+  return headers;
 }
 
 // A display summary; the PGN itself is what gets reviewed.
 function summarise(pgn, players) {
+  const headers = pgnHeaders(pgn);
   return {
-    white: pgnHeader(pgn, 'White') || players.white || '?',
-    black: pgnHeader(pgn, 'Black') || players.black || '?',
-    result: pgnHeader(pgn, 'Result') || '*',
-    date: (pgnHeader(pgn, 'UTCDate') || pgnHeader(pgn, 'Date')).replaceAll('.', '-'),
+    white: headers.get('White') || players.white || '?',
+    black: headers.get('Black') || players.black || '?',
+    result: headers.get('Result') || '*',
+    date: (headers.get('UTCDate') || headers.get('Date') || '').replaceAll('.', '-'),
     pgn
   };
 }

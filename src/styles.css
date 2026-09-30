@@ -445,15 +445,18 @@ label.field-label { margin-bottom: 6px; }
   top: calc(var(--board-size, 100%) / 2);
   left: calc(var(--board-size, 100%) / 2);
   z-index: 150;
-  display: flex;
   gap: 6px;
+  margin: 0;
   padding: 8px;
   transform: translate(-50%, -50%);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
   background: var(--surface);
   box-shadow: var(--shadow);
+  color: var(--text);
 }
+
+.promotion-picker[open] { display: flex; }
 
 .promotion-choice {
   width: 56px;
@@ -1117,7 +1120,7 @@ label.field-label { margin-bottom: 6px; }
 }
 
 .import-row input[type="text"] { flex: 1 1 140px; min-width: 0; }
-.import-status { min-height: 1em; margin-bottom: 8px; color: var(--text-muted); font-size: 12px; }
+.import-status { display: block; min-height: 1em; margin-bottom: 8px; color: var(--text-muted); font-size: 12px; }
 .import-status:empty { display: none; }
 
 .import-results {

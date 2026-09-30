@@ -134,7 +134,10 @@ const OPENINGS_PATH = new URL('./data/openings.tsv', import.meta.url);
 
 // Sources disagree on check, mate and annotation marks, so book lookups ignore them.
 export function normaliseSan(san) {
-  return String(san).replace(/[+#!?]+$/, '');
+  const text = String(san);
+  let end = text.length;
+  while (end > 0 && '+#!?'.includes(text[end - 1])) end -= 1;
+  return text.slice(0, end);
 }
 
 function parseOpenings(text) {
@@ -159,7 +162,10 @@ for (const item of openingBook) {
   for (let ply = 0; ply < item.line.length; ply += 1) {
     const prefix = item.line.slice(0, ply).join(' ');
     let byMove = continuationsByPrefix.get(prefix);
-    if (!byMove) continuationsByPrefix.set(prefix, byMove = new Map());
+    if (!byMove) {
+      byMove = new Map();
+      continuationsByPrefix.set(prefix, byMove);
+    }
     const move = item.line[ply];
     const current = byMove.get(move);
     if (!current || item.line.length < current.line.length) byMove.set(move, item);

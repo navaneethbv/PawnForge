@@ -285,6 +285,7 @@ async function analyzeAllMovesRequest(req, res, signal) {
   res.on('close', () => { clientDisconnected = true; });
 
   const rows = [];
+  // Evaluate one move at a time so progress streams in order and a single client cannot flood the engine pool.
   for (const [i, move] of legal.entries()) {
     if (clientDisconnected) return;
     // The engine scores the reply position for the opponent. Negate it for the

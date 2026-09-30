@@ -1,5 +1,5 @@
-import { Chess } from '/vendor/chess.js';
-import { ImportError, fetchRecentGames } from '/src/game-import.js';
+import { Chess } from '../vendor/chess.js';
+import { ImportError, fetchRecentGames } from './game-import.js';
 
 const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
 // Mirrors chess-analysis.js: mate in N is encoded as ±(MATE_SCORE - N).
@@ -232,7 +232,7 @@ function jumpToHistoryPly(ply) {
   clearSquareHighlights();
   const last = line.at(-1);
   if (last) highlightLastMove(last.from, last.to, null);
-  updateCoachHint();
+  void updateCoachHint();
   saveSession();
 }
 
@@ -245,8 +245,8 @@ function commitMove(move, { syncBoard = true } = {}) {
   clearExplorerUI();
   highlightLastMove(move.from, move.to, null);
   playChessSound(moveSound(move));
-  updateCoachHint();
-  checkSparringTurn();
+  void updateCoachHint();
+  void checkSparringTurn();
 }
 
 function playUci(uci) {
@@ -657,7 +657,7 @@ async function checkSparringTurn() {
     if (requestId === sparringRequestId) {
       isEngineThinking = false;
       sparringController = null;
-      updateCoachHint();
+      void updateCoachHint();
     }
   }
 }
@@ -755,14 +755,14 @@ function openPromotionPicker(from, to) {
   el.promotionPicker.querySelectorAll('.promotion-choice').forEach((button) => {
     button.querySelector('img').src = PIECE_THEME.get(`${color}${button.dataset.piece.toUpperCase()}`);
   });
-  el.promotionPicker.hidden = false;
+  el.promotionPicker.show();
   el.promotionPicker.querySelector('.promotion-choice').focus();
 }
 
 function closePromotionPicker() {
   if (!pendingPromotion) return;
   pendingPromotion = null;
-  el.promotionPicker.hidden = true;
+  el.promotionPicker.close();
 }
 
 function choosePromotion(piece) {
@@ -1452,7 +1452,7 @@ function navigateToGamePly(ply) {
   });
 
   drawEvalGraph(gameReviewData.plies, ply);
-  updateCoachHint();
+  void updateCoachHint();
 }
 
 function renderGameSummary(data, hist) {
@@ -1538,7 +1538,7 @@ async function detectOpening() {
             try { move = game.move(c.move); } catch (_e) {}
             if (!move) return;
             commitMove(move);
-            detectOpening();
+            void detectOpening();
           }
         },
         h('span', { class: 'continuation-move' }, c.move),
@@ -1630,8 +1630,8 @@ function loadPosition(fen) {
   clearPositionAnalysis();
   clearSquareHighlights();
   clearExplorerUI();
-  updateCoachHint();
-  checkSparringTurn();
+  void updateCoachHint();
+  void checkSparringTurn();
 }
 
 function loadFenFromInput() {
@@ -1657,7 +1657,7 @@ function undoMove() {
   playedMoves = playedMoves.slice(0, target + 1);
   jumpToHistoryPly(target);
   renderMoves();
-  checkSparringTurn();
+  void checkSparringTurn();
 }
 
 function setSoundEnabled(enabled) {
@@ -1700,7 +1700,7 @@ function bindUI() {
   el.downloadPgnBtn.addEventListener('click', downloadPgn);
   el.importGamesBtn.addEventListener('click', importGames);
   el.importUsername.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter') importGames();
+    if (event.key === 'Enter') void importGames();
   });
   bindPromotionPicker();
 
@@ -1758,7 +1758,7 @@ function bindUI() {
     coachEnabled = e.target.checked;
     currentCoachMove = null;
     try { localStorage.setItem('pawnforge_coach', coachEnabled ? 'true' : 'false'); } catch (_e) {}
-    updateCoachHint();
+    void updateCoachHint();
   });
   el.applyCoachMoveBtn.addEventListener('click', applyCoachMove);
 
@@ -1773,18 +1773,18 @@ function bindUI() {
     if (sparringActive) {
       sparringPlayerColor = el.sparringColor.value;
       orientForSparring();
-      checkSparringTurn();
+      void checkSparringTurn();
     } else {
       setEngineStatus('Ready', 'idle');
     }
-    updateCoachHint();
+    void updateCoachHint();
   });
   el.sparringColor.addEventListener('change', (e) => {
     invalidateSparring();
     sparringPlayerColor = e.target.value;
     orientForSparring();
-    if (sparringActive) checkSparringTurn();
-    updateCoachHint();
+    if (sparringActive) void checkSparringTurn();
+    void updateCoachHint();
   });
 }
 
@@ -1821,4 +1821,4 @@ renderMoves();
 const restoredLastMove = playedMoves.at(currentMoveIndex);
 if (currentMoveIndex >= 0 && restoredLastMove) highlightLastMove(restoredLastMove.from, restoredLastMove.to, null);
 updateEvalBar(0);
-updateCoachHint();
+void updateCoachHint();

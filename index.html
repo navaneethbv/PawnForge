@@ -86,12 +86,12 @@
                     </marker>
                   </defs>
                 </svg>
-                <div id="promotionPicker" class="promotion-picker" role="dialog" aria-label="Choose a promotion piece" hidden>
+                <dialog id="promotionPicker" class="promotion-picker" aria-label="Choose a promotion piece">
                   <button type="button" class="promotion-choice" data-piece="q" aria-label="Queen"><img alt="" /></button>
                   <button type="button" class="promotion-choice" data-piece="r" aria-label="Rook"><img alt="" /></button>
                   <button type="button" class="promotion-choice" data-piece="b" aria-label="Bishop"><img alt="" /></button>
                   <button type="button" class="promotion-choice" data-piece="n" aria-label="Knight"><img alt="" /></button>
-                </div>
+                </dialog>
               </div>
             </div>
 
@@ -265,7 +265,7 @@
               <input id="importUsername" type="text" placeholder="Username" aria-label="Username" autocomplete="off" spellcheck="false" />
               <button id="importGamesBtn" class="btn" type="button">Fetch games</button>
             </div>
-            <p id="importStatus" class="import-status" role="status" aria-live="polite"></p>
+            <output id="importStatus" class="import-status" aria-live="polite"></output>
             <div id="importResults" class="import-results" hidden></div>
             <label class="field-label" for="pgnInput">PGN</label>
             <textarea id="pgnInput" rows="5" spellcheck="false" placeholder="[Event &quot;Casual game&quot;]&#10;&#10;1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 …"></textarea>

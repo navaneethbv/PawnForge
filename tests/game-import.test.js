@@ -6,9 +6,10 @@ const pgn = (white, black, result, date) => `[Event "Rated game"]\n[Date "${date
 
 function stubFetch(routes) {
   const calls = [];
+  const byUrl = new Map(Object.entries(routes));
   const fetchImpl = async (url, init) => {
     calls.push({ url, init });
-    const route = routes[url];
+    const route = byUrl.get(url);
     if (!route) return new Response('missing', { status: 404 });
     return typeof route === 'function' ? route() : new Response(route.body, { status: route.status || 200 });
   };

@@ -37,6 +37,9 @@
   let active = true;
   let endpoint = DEFAULT_ENDPOINT;
   let sideMode = 'auto';
+  // Engine search depth; higher is stronger but slower.
+  const DEPTH_CHOICES = [8, 12, 16, 20];
+  let depth = DEPTH_CHOICES[0];
   let lastPositionKey = '';
   let activeCandidates = [];
   let currentSnapshot = null;
@@ -47,7 +50,6 @@
   let observedPositionKey = '';
   let observedPositionAt = 0;
   let pageFenPromise = null;
-  let pageFenRequestedAt = 0;
   let pendingForcedAnalysis = false;
   let pollTimer = 0;
   let pointerElements = [];
@@ -55,7 +57,10 @@
   let previousAnalysis = null;
   let verdictMarker = null;
 
-  const POSITION_STABILITY_MS = 600;
+  // A position must read the same on two consecutive polls before it is analysed, which skips
+  // mid-animation frames while keeping move-to-analysis latency well under half a second.
+  const POLL_INTERVAL_MS = 250;
+  const POSITION_STABILITY_MS = 200;
 
   const style = document.createElement('style');
   style.id = 'pawnforge-style';
@@ -270,6 +275,15 @@
         <button id="pawnforge-analyze" type="button">Analyze</button>
       </div>
       <div class="pawnforge-control-row">
+        <label for="pawnforge-depth">Depth</label>
+        <select id="pawnforge-depth" aria-label="Engine search depth">
+          <option value="8">8 (fastest)</option>
+          <option value="12">12</option>
+          <option value="16">16</option>
+          <option value="20">20 (strongest)</option>
+        </select>
+      </div>
+      <div class="pawnforge-control-row">
         <label for="pawnforge-fen">FEN</label>
         <input id="pawnforge-fen" type="text" autocomplete="off" spellcheck="false" placeholder="Optional position FEN" aria-label="Optional position FEN" />
         <button id="pawnforge-use-fen" type="button">Use</button>
@@ -289,6 +303,7 @@
   const verdictEl = hud.querySelector('#pawnforge-verdict');
   const candidateEl = hud.querySelector('#pawnforge-hud-candidates');
   const sideEl = hud.querySelector('#pawnforge-side');
+  const depthEl = hud.querySelector('#pawnforge-depth');
   const fenEl = hud.querySelector('#pawnforge-fen');
   const analyzeEl = hud.querySelector('#pawnforge-analyze');
   const useFenEl = hud.querySelector('#pawnforge-use-fen');
@@ -567,6 +582,7 @@
       [() => sideFromDom(board), 'board attributes'],
       [sideFromSelectedPly, 'move list'],
       [() => sideFromLastMoveHighlight(board, squares), 'last-move highlight'],
+      [sideFromRunningClock, 'running clock'],
       [sideFromMoveListText, 'move list']
     ];
     for (const [detect, sideSource] of detectors) {
@@ -576,12 +592,22 @@
     return { board, sideUnknown: true };
   }
 
+  // lichess (live games): the running clock belongs to the side to move.
+  function sideFromRunningClock() {
+    const classes = classText(document.querySelector('.rclock.running'));
+    if (/\brclock-white\b/.test(classes)) return 'w';
+    if (/\brclock-black\b/.test(classes)) return 'b';
+    return null;
+  }
+
   function readSameWorldFen() {
     const candidates = [
       typeof root.game?.fen === 'function' ? root.game.fen() : null,
       typeof root.chess?.fen === 'function' ? root.chess.fen() : null,
       root.__PAWNFORGE_FEN__,
-      document.querySelector('input#fenInput, input[name="fen"], input.fen')?.value
+      document.querySelector('input#fenInput, input[name="fen"], input.fen')?.value,
+      // lichess analysis board: <div class="pair"><label>FEN</label><input class="copyable" value="...">
+      ...[...document.querySelectorAll('.pair input.copyable')].map((input) => input.value)
     ];
     return candidates.map(normaliseFen).find(Boolean) || null;
   }
@@ -593,9 +619,8 @@
       shutdown();
       return Promise.resolve(null);
     }
-    const now = Date.now();
-    if (pageFenPromise && now - pageFenRequestedAt < 900) return pageFenPromise;
-    pageFenRequestedAt = now;
+    // Share only an in-flight read; a cached result would hide moves from the next poll.
+    if (pageFenPromise) return pageFenPromise;
     pageFenPromise = new Promise((resolve) => {
       try {
         extensionRuntime.sendMessage({ type: 'read-page-fen' }, (response) => {
@@ -608,7 +633,7 @@
         resolve(null);
       }
     }).finally(() => {
-      window.setTimeout(() => { pageFenPromise = null; }, 500);
+      pageFenPromise = null;
     });
     return pageFenPromise;
   }
@@ -954,7 +979,7 @@
     analysisController = new AbortController();
 
     try {
-      const payload = { fen: snapshot.fen, settings: { depth: 8, multiPv: 3 } };
+      const payload = { fen: snapshot.fen, settings: { depth, multiPv: 3 } };
       let data;
       if (isExtension) {
         if (!extensionContextAlive()) {
@@ -1010,7 +1035,7 @@
       analysisInFlight = false;
       if (pendingForcedAnalysis && active) {
         pendingForcedAnalysis = false;
-        analyzePosition(true);
+        void analyzePosition(true);
       }
     }
   }
@@ -1021,14 +1046,16 @@
   async function loadSettings() {
     if (!extensionStorage) return;
     try {
-      const stored = await extensionStorage.get(['endpoint', 'sideMode', 'approximate']);
+      const stored = await extensionStorage.get(['endpoint', 'sideMode', 'approximate', 'depth']);
       if (typeof stored.endpoint === 'string' && !editedSettings.has('endpoint')) {
         const url = new URL(stored.endpoint);
         if (url.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(url.hostname) && !url.username && !url.password && url.pathname === '/api/analyze/position') endpoint = url.toString();
       }
       if (!editedSettings.has('sideMode') && (stored.sideMode === 'w' || stored.sideMode === 'b' || stored.sideMode === 'auto')) sideMode = stored.sideMode;
       if (!editedSettings.has('approximate') && typeof stored.approximate === 'boolean') approximateEl.checked = stored.approximate;
+      if (!editedSettings.has('depth') && DEPTH_CHOICES.includes(stored.depth)) depth = stored.depth;
       sideEl.value = sideMode;
+      depthEl.value = String(depth);
       if (!editedSettings.has('endpointField')) endpointEl.value = endpoint;
     } catch (_error) {
       setHint('Using the default local PawnForge endpoint.');
@@ -1038,7 +1065,7 @@
   function persistSettings() {
     if (!extensionStorage || !extensionContextAlive()) return;
     try {
-      extensionStorage.set({ endpoint, sideMode, approximate: approximateEl.checked }).catch(() => {});
+      extensionStorage.set({ endpoint, sideMode, depth, approximate: approximateEl.checked }).catch(() => {});
     } catch (_error) {
       // The extension was reloaded; the next poll shuts this orphaned instance down.
     }
@@ -1095,14 +1122,14 @@
     }
     lastPositionKey = '';
     setMessage('Coach is on. Looking for a chess position...');
-    analyzePosition(true);
+    void analyzePosition(true);
   }
 
   approximateEl.addEventListener('change', () => {
     editedSettings.add('approximate');
     persistSettings();
     lastPositionKey = '';
-    analyzePosition(true);
+    void analyzePosition(true);
   });
   switchEl.addEventListener('change', () => setActive(switchEl.checked));
   sideEl.addEventListener('change', () => {
@@ -1110,7 +1137,18 @@
     editedSettings.add('sideMode');
     persistSettings();
     lastPositionKey = '';
-    analyzePosition(true);
+    void analyzePosition(true);
+  });
+  depthEl.addEventListener('change', () => {
+    const value = Number(depthEl.value);
+    if (!DEPTH_CHOICES.includes(value)) return;
+    depth = value;
+    editedSettings.add('depth');
+    persistSettings();
+    // Evaluations from different depths are not comparable, so start a fresh move history.
+    previousAnalysis = null;
+    lastPositionKey = '';
+    void analyzePosition(true);
   });
   analyzeEl.addEventListener('click', () => analyzePosition(true, { optIn: true }));
   useFenEl.addEventListener('click', () => {
@@ -1120,7 +1158,7 @@
       return;
     }
     fenEl.value = value;
-    analyzePosition(true);
+    void analyzePosition(true);
   });
   endpointEl.addEventListener('input', () => editedSettings.add('endpointField'));
   saveEndpointEl.addEventListener('click', () => {
@@ -1133,7 +1171,7 @@
       persistSettings();
       lastPositionKey = '';
       setMessage('API endpoint saved.');
-      analyzePosition(true);
+      void analyzePosition(true);
     } catch (error) {
       setMessage(error?.message || 'Enter a valid API endpoint.');
     }
@@ -1169,9 +1207,9 @@
     });
   }
 
-  loadSettings().finally(() => analyzePosition(true));
+  void loadSettings().finally(() => { void analyzePosition(true); });
   pollTimer = window.setInterval(() => {
     if (!hud.isConnected || (isExtension && !extensionContextAlive())) shutdown();
-    else analyzePosition(false);
-  }, 1500);
+    else void analyzePosition(false);
+  }, POLL_INTERVAL_MS);
 })();

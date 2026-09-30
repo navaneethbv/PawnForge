@@ -29,18 +29,29 @@ test('FEN validation normalises whitespace and rejects malformed input', () => {
 });
 
 test('opening detection picks the most specific line', () => {
-  assert.equal(detectOpening(['e4', 'e5', 'Nf3', 'Nc6', 'Bb5', 'a6']).name, 'Ruy Lopez, Morphy Defence');
+  assert.equal(detectOpening(['e4', 'e5', 'Nf3', 'Nc6', 'Bb5', 'a6']).name, 'Ruy Lopez: Morphy Defense');
   assert.equal(detectOpening(['e4', 'e6', 'd4', 'd5', 'Nd2']).eco, 'C03');
   assert.deepEqual(detectOpening(['e4', 'e5', 'Nf3', 'Nc6', 'Bb5', 'h6']).bookPlyRange, [1, 5]);
-  assert.equal(detectOpening(['a3']).bookPlyRange, null);
+  assert.equal(detectOpening(['Kf2']).bookPlyRange, null);
+  // Deep book lines are recognised, not just the first few moves.
+  const najdorf = ['e4', 'c5', 'Nf3', 'd6', 'd4', 'cxd4', 'Nxd4', 'Nf6', 'Nc3', 'a6', 'Be3', 'e5', 'Nb3', 'Be6', 'f3'];
+  assert.equal(detectOpening(najdorf).name, 'Sicilian Defense: Najdorf Variation, English Attack');
   assert.equal(detectOpening([]).name, 'Starting position');
   assert.equal(detectOpening(['e5'], { startFen: '8/8/8/4k3/8/8/4P3/4K3 w - - 0 1' }).name, 'Custom starting position');
+});
+
+test('opening lookups ignore check and annotation marks', () => {
+  // The book writes 3.Bb5+; a PGN may write it with or without the check sign or with annotations.
+  for (const move of ['Bb5+', 'Bb5', 'Bb5+!?']) {
+    assert.equal(detectOpening(['e4', 'c5', 'Nf3', 'd6', move]).name, 'Sicilian Defense: Moscow Variation');
+  }
+  assert.ok(findContinuations(['e4', 'c5', 'Nf3', 'd6']).some((c) => c.move === 'Bb5'));
 });
 
 test('continuations are unique and named after the line they enter', () => {
   const next = findContinuations(['e4', 'c5']);
   assert.equal(new Set(next.map((c) => c.move)).size, next.length);
-  assert.equal(next.find((c) => c.move === 'c3').name, 'Sicilian Defence, Alapin Variation');
+  assert.equal(next.find((c) => c.move === 'c3').name, 'Sicilian Defense: Alapin Variation');
   assert.ok(findContinuations([]).some((c) => c.move === 'e4'));
 });
 

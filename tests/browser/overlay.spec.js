@@ -71,6 +71,49 @@ test('auto detect falls back to the last-move highlight', async ({ page }) => {
   await expect(page.locator('#pawnforge-hint')).toContainText('last-move highlight');
 });
 
+test('auto detect reads the side to move from a running lichess clock', async ({ page }) => {
+  const fens = await routeAnalysis(page);
+  await chessComFixture(page, { moveList: false });
+  await page.evaluate(() => {
+    document.body.insertAdjacentHTML('beforeend', '<div class="rclock rclock-top rclock-black running">0:42</div><div class="rclock rclock-bottom rclock-white">1:03</div>');
+  });
+  await injectOverlay(page);
+  await page.locator('#pawnforge-approximate').check();
+  await expect(page.locator('#pawnforge-hud-candidates button').first()).toBeVisible();
+  expect(fens.at(-1)).toBe(blackToMove);
+  await expect(page.locator('#pawnforge-hint')).toContainText('running clock');
+});
+
+test('a lichess analysis board is read from its FEN field without approximation', async ({ page }) => {
+  const fens = await routeAnalysis(page);
+  const fen = 'r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3';
+  await page.setContent(`<!doctype html><body>
+    <div class="copyables">
+      <div class="pair"><label>URL</label><input class="copyable" readonly value="https://lichess.org/analysis/standard"></div>
+      <div class="pair"><label>FEN</label><input class="copyable" readonly value="${fen}"></div>
+    </div></body>`);
+  await injectOverlay(page);
+  await expect(page.locator('#pawnforge-hud-candidates button').first()).toBeVisible();
+  expect(fens.at(-1)).toBe(fen);
+  await expect(page.locator('#pawnforge-hint')).toContainText('Source: page FEN');
+  await expect(page.locator('#pawnforge-approximate')).not.toBeChecked();
+});
+
+test('the chosen engine depth is sent with the analysis request', async ({ page }) => {
+  const depths = [];
+  await page.route('**/api/analyze/position', async (route) => {
+    depths.push(route.request().postDataJSON().settings.depth);
+    await route.fulfill({ json: { topMoves: [{ uci: 'e2e4', evalCp: 20, pv: 'e2e4' }] } });
+  });
+  await page.setContent('<!doctype html><body></body>');
+  await injectOverlay(page);
+  await page.locator('#pawnforge-fen').fill('rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1');
+  await page.locator('#pawnforge-use-fen').click();
+  await expect.poll(() => depths.at(-1)).toBe(8);
+  await page.locator('#pawnforge-depth').selectOption('16');
+  await expect.poll(() => depths.at(-1)).toBe(16);
+});
+
 test('pressing Analyze on a DOM-only board opts into approximate analysis', async ({ page }) => {
   const fens = await routeAnalysis(page);
   await chessComFixture(page);
@@ -81,6 +124,23 @@ test('pressing Analyze on a DOM-only board opts into approximate analysis', asyn
   await expect(page.locator('#pawnforge-hud-candidates button').first()).toBeVisible();
   await expect(page.locator('#pawnforge-approximate')).toBeChecked();
   expect(fens.at(-1)).toBe(blackToMove);
+});
+
+test('a move on the board is re-analysed within a second', async ({ page }) => {
+  const fens = await routeAnalysis(page);
+  await chessComFixture(page);
+  await injectOverlay(page);
+  await page.locator('#pawnforge-approximate').check();
+  await expect(page.locator('#pawnforge-hud-candidates button').first()).toBeVisible();
+  const requestsBefore = fens.length;
+  // Black answers 7...h6: the h7 pawn moves to h6.
+  await page.evaluate(() => {
+    const pawn = document.querySelector('.piece.square-87');
+    pawn.classList.replace('square-87', 'square-86');
+    pawn.style.top = '120px';
+  });
+  await expect.poll(() => fens.length, { timeout: 1000 }).toBeGreaterThan(requestsBefore);
+  expect(fens.at(-1).split(' ')[0]).toBe('r2qkb1r/pp1nnpp1/2p1p2p/3pPb2/3P3P/2PB1N2/PP3PP1/RNBQK2R');
 });
 
 test('an overlay whose extension context is invalidated shuts down without unhandled errors', async ({ page }) => {

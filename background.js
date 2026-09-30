@@ -1,4 +1,11 @@
 const requests = new Map();
+
+// Only forward settings the overlay offers; anything else falls back to the fast default.
+function engineSettings(settings) {
+  const depth = [8, 12, 16, 20].includes(settings?.depth) ? settings.depth : 8;
+  return { depth, multiPv: 3 };
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type !== 'analyze-position' || !sender.tab?.id) return undefined;
   const tabId = sender.tab.id;
@@ -17,7 +24,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     fetch(localEndpoint, {
       redirect: 'error',
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ fen: message.payload?.fen, settings: { depth: 8, multiPv: 3 } }),
+      body: JSON.stringify({ fen: message.payload?.fen, settings: engineSettings(message.payload?.settings) }),
       signal: controller.signal
     }).then(async (response) => {
       const data = await response.json();
@@ -33,14 +40,28 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 chrome.tabs.onRemoved.addListener((tabId) => { requests.get(tabId)?.abort(); requests.delete(tabId); });
 
+// Runs in the page's MAIN world, where site objects such as chess.com's board element are visible.
+// Injected functions are serialised, so helpers must live inside this function.
 function readFenFromPage() {
+  const readChessComBoard = () => {
+    try {
+      const board = document.querySelector('wc-chess-board, chess-board');
+      return typeof board?.game?.getFEN === 'function' ? board.game.getFEN() : null;
+    } catch (_error) {
+      // The site's board object can throw mid-update; the other sources below still apply.
+      return null;
+    }
+  };
   const values = [
     typeof window.game?.fen === 'function' ? window.game.fen() : null,
     typeof window.chess?.fen === 'function' ? window.chess.fen() : null,
     window.__PAWNFORGE_FEN__,
-    document.querySelector('input#fenInput, input[name="fen"], input.fen')?.value
+    readChessComBoard(),
+    document.querySelector('input#fenInput, input[name="fen"], input.fen')?.value,
+    // lichess analysis board: <div class="pair"><label>FEN</label><input class="copyable" value="...">
+    ...[...document.querySelectorAll('.pair input.copyable')].map((input) => input.value)
   ];
-  return values.find((value) => typeof value === 'string' && value.includes('/')) || null;
+  return values.find((value) => typeof value === 'string' && /^[^\s/]+(?:\/[^\s/]+){7} [wb] /.test(value.trim())) || null;
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {

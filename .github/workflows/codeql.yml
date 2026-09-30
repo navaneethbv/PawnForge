@@ -44,6 +44,10 @@ jobs:
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build }}
+          # vendor/ holds unmodified third-party libraries; their findings belong upstream.
+          config: |
+            paths-ignore:
+              - vendor/**
       - name: Build macOS package for CodeQL
         if: matrix.language == 'swift'
         run: swift build --package-path macos --build-path "$RUNNER_TEMP/codeql-swift" -Xswiftc -warnings-as-errors

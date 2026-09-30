@@ -17,14 +17,17 @@ If the server uses another port, update the API field in the overlay and choose 
 ## How position detection works
 
 PawnForge first asks the page for a full FEN through a Chrome main-world bridge.
+On chess.com it reads the board element's game object, and on the lichess analysis board it reads the FEN field, so both give exact positions including castling and en passant.
 If the page does not expose a complete six-field FEN, it reads visible pieces from common DOM chessboard structures.
 This reconstruction is incomplete: it cannot recover castling rights, en passant targets, or draw counters.
 Paste a full FEN for accurate analysis, or explicitly select **Analyze approximate DOM position** to analyze with special move rights disabled.
 The panel keeps an approximation warning visible with those results.
-Auto detect uses turn metadata when available and falls back to the bottom move-list row: a complete white and black pair means White moves next, while a row containing only White's move means Black moves next.
+Auto detect uses turn metadata, the selected move-list entry, the last-move highlight, or a running lichess clock, and falls back to the bottom move-list row: a complete white and black pair means White moves next, while a row containing only White's move means Black moves next.
+Live lichess games do not expose a FEN, so they use this approximate path.
 The overlay waits for a stable board snapshot and never overlaps engine requests while a previous analysis is running.
 The Side selector controls the side to move for approximate DOM analysis.
 A manual FEN takes precedence and supplies all six fields.
+The Depth selector sets the engine search depth (8, 12, 16 or 20); changing it starts a fresh blunder-detector history because evaluations from different depths are not comparable.
 
 The overlay can render red origin and destination pointers over any visible square-based or DOM-backed chessboard.
 A canvas-only board without a page FEN needs a manually pasted FEN because browser content scripts cannot reliably recover hidden canvas state.

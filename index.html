@@ -7,7 +7,7 @@
     <meta name="description" content="PawnForge: local Stockfish chess analysis, game review, and move exploration." />
     <title>PawnForge · Chess Analysis</title>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%233b82f6'/%3E%3Ctext x='16' y='24' text-anchor='middle' font-size='22' fill='white'%3E%E2%99%9F%EF%B8%8E%3C/text%3E%3C/svg%3E" />
-    <link rel="stylesheet" href="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css" integrity="sha384-q94+BZtLrkL1/ohfjR8c6L+A6qzNH9R2hBLwyoAfu3i/WCvQjzL2RQJ3uNHDISdU" crossorigin="anonymous" />
+    <link rel="stylesheet" href="/vendor/chessboard-1.0.0.min.css" />
     <link rel="stylesheet" href="/src/styles.css" />
   </head>
   <body>
@@ -23,6 +23,7 @@
       <symbol id="i-mute" viewBox="0 0 24 24"><path d="M11 5 6 9H2v6h4l5 4z" /><path d="m22 9-6 6M16 9l6 6" /></symbol>
       <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="12" height="12" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></symbol>
       <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5" /></symbol>
+      <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5M5 21h14" /></symbol>
       <symbol id="i-first" viewBox="0 0 24 24"><path d="m11 17-5-5 5-5M18 17l-5-5 5-5" /></symbol>
       <symbol id="i-prev" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6" /></symbol>
       <symbol id="i-next" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6" /></symbol>
@@ -85,6 +86,12 @@
                     </marker>
                   </defs>
                 </svg>
+                <dialog id="promotionPicker" class="promotion-picker" aria-label="Choose a promotion piece">
+                  <button type="button" class="promotion-choice" data-piece="q" aria-label="Queen"><img alt="" /></button>
+                  <button type="button" class="promotion-choice" data-piece="r" aria-label="Rook"><img alt="" /></button>
+                  <button type="button" class="promotion-choice" data-piece="b" aria-label="Bishop"><img alt="" /></button>
+                  <button type="button" class="promotion-choice" data-piece="n" aria-label="Knight"><img alt="" /></button>
+                </dialog>
               </div>
             </div>
 
@@ -125,6 +132,9 @@
                 <button id="moveNavPrev" class="btn btn-icon btn-sm" type="button" title="Previous move (←)" aria-label="Previous move"><svg class="icon" aria-hidden="true"><use href="#i-prev" /></svg></button>
                 <button id="moveNavNext" class="btn btn-icon btn-sm" type="button" title="Next move (→)" aria-label="Next move"><svg class="icon" aria-hidden="true"><use href="#i-next" /></svg></button>
                 <button id="moveNavEnd" class="btn btn-icon btn-sm" type="button" title="Latest move (End)" aria-label="Latest move"><svg class="icon" aria-hidden="true"><use href="#i-last" /></svg></button>
+                <span class="move-nav-divider" aria-hidden="true"></span>
+                <button id="copyPgnBtn" class="btn btn-icon btn-sm" type="button" title="Copy PGN" aria-label="Copy PGN"><svg class="icon" aria-hidden="true"><use href="#i-copy" /></svg></button>
+                <button id="downloadPgnBtn" class="btn btn-icon btn-sm" type="button" title="Download PGN" aria-label="Download PGN"><svg class="icon" aria-hidden="true"><use href="#i-download" /></svg></button>
               </div>
             </div>
             <div id="moveList" class="move-list" data-empty="No moves yet. Drag a piece to start."></div>
@@ -241,9 +251,22 @@
             <div class="section-header">
               <div>
                 <h2>Game review</h2>
-                <p class="section-subtitle">Paste a PGN to classify every move and find the turning points.</p>
+                <p class="section-subtitle">Paste a PGN or import a recent game to classify every move and find the turning points.</p>
               </div>
             </div>
+            <div class="import-row">
+              <label class="field field-inline">
+                <span class="field-label">Import from</span>
+                <select id="importSite">
+                  <option value="lichess">lichess</option>
+                  <option value="chesscom">chess.com</option>
+                </select>
+              </label>
+              <input id="importUsername" type="text" placeholder="Username" aria-label="Username" autocomplete="off" spellcheck="false" />
+              <button id="importGamesBtn" class="btn" type="button">Fetch games</button>
+            </div>
+            <output id="importStatus" class="import-status" aria-live="polite"></output>
+            <div id="importResults" class="import-results" hidden></div>
             <label class="field-label" for="pgnInput">PGN</label>
             <textarea id="pgnInput" rows="5" spellcheck="false" placeholder="[Event &quot;Casual game&quot;]&#10;&#10;1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 …"></textarea>
             <div class="game-controls-row">
@@ -368,8 +391,8 @@
       </footer>
     </div>
 
-    <script src="https://code.jquery.com/jquery-3.7.1.min.js" integrity="sha384-1H217gwSVyLSIfaLxHbE7dRb3v4mYCKbpQvzx0cegeju1MVsGrX5xXxAvs/HgeFs" crossorigin="anonymous"></script>
-    <script src="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js" integrity="sha384-8Vi8VHwn3vjQ9eUHUxex3JSN/NFqUg3QbPyX8kWyb93+8AC/pPWTzj+nHtbC5bxD" crossorigin="anonymous"></script>
+    <script src="/vendor/jquery.min.js"></script>
+    <script src="/vendor/chessboard-1.0.0.min.js"></script>
     <script type="module" src="/src/main.js"></script>
   </body>
 </html>

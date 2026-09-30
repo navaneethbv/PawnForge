@@ -3,9 +3,8 @@ import { readFile } from 'node:fs/promises';
 const start = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
 const afterE4 = 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1';
 async function load(page) {
-  await page.route('https://cdn.jsdelivr.net/npm/chess.js@1.1.0/+esm', r => r.fulfill({ headers: { 'access-control-allow-origin': '*' }, path: 'node_modules/chess.js/dist/esm/chess.js', contentType: 'text/javascript' }));
-  await page.route('https://code.jquery.com/**', r => r.fulfill({ headers: { 'access-control-allow-origin': '*' }, path: 'node_modules/jquery/dist/jquery.min.js', contentType: 'text/javascript' }));
-  await page.route('https://unpkg.com/**', r => r.fulfill({ headers: { 'access-control-allow-origin': '*' }, path: r.request().url().endsWith('.css') ? 'node_modules/@chrisoakman/chessboardjs/dist/chessboard-1.0.0.min.css' : 'node_modules/@chrisoakman/chessboardjs/dist/chessboard-1.0.0.min.js', contentType: r.request().url().endsWith('.css') ? 'text/css' : 'text/javascript' }));
+  // Every library is served by PawnForge itself, so any outside request is a regression.
+  await page.route(url => !['127.0.0.1', 'localhost'].includes(url.hostname), r => r.abort());
   await page.goto('/');
   await expect(page.locator('#board img')).toHaveCount(32);
 }
@@ -265,7 +264,7 @@ test('real-engine workflows render analysis, coach, explorer filters and a compl
   await page.locator('#openingBtn').click();
   await page.locator('.continuation-row').filter({ has: page.locator('.continuation-move', { hasText: /^e4$/ }) }).click();
   await expect(page.locator('#fenInput')).toHaveValue(afterE4);
-  await expect(page.locator('#openingResult')).toContainText("King's Pawn Opening");
+  await expect(page.locator('#openingResult')).toContainText("King's Pawn Game");
 
   await page.locator('[data-tab="game-review"]').click();
   await page.locator('#gameDepthSelect').selectOption('8');
@@ -354,4 +353,110 @@ test('terminal positions distinguish checkmate from stalemate with the real engi
     expect(response.ok()).toBeTruthy();
     expect(await response.json()).toMatchObject({ bestEvalCp: score, topMoves: [] });
   }
+});
+
+test('a pawn can underpromote through the promotion picker, and Escape cancels it', async ({ page }) => {
+  const promotable = '4k3/P7/8/8/8/8/8/4K3 w - - 0 1';
+  await load(page);
+  await page.locator('#fenInput').fill(promotable);
+  await page.locator('#loadFenBtn').click();
+
+  await drag(page, 'a7', 'a8');
+  const picker = page.getByRole('dialog', { name: 'Choose a promotion piece' });
+  await expect(picker).toBeVisible();
+  await expect(picker.getByRole('button', { name: 'Queen' })).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(picker).toBeHidden();
+  await expect(page.locator('#fenInput')).toHaveValue(promotable);
+  await expect(page.locator('#board .square-a7 img')).toHaveCount(1);
+  // chessboard.js ignores new drags until the snapback animation hides its floating piece.
+  await expect(page.locator('body > img:visible')).toHaveCount(0);
+
+  await drag(page, 'a7', 'a8');
+  await picker.getByRole('button', { name: 'Knight' }).click();
+  await expect(picker).toBeHidden();
+  await expect(page.locator('#fenInput')).toHaveValue('N3k3/8/8/8/8/8/8/4K3 b - - 0 1');
+  await expect(page.locator('#moveList')).toContainText('a8=N');
+});
+
+test('the played game downloads as PGN, including a custom start and the result', async ({ page }) => {
+  await load(page);
+  await drag(page, 'f2', 'f3');
+  await drag(page, 'e7', 'e5');
+  await drag(page, 'g2', 'g4');
+  await drag(page, 'd8', 'h4');
+  const [download] = await Promise.all([page.waitForEvent('download'), page.locator('#downloadPgnBtn').click()]);
+  expect(download.suggestedFilename()).toMatch(/^pawnforge-\d{4}-\d{2}-\d{2}\.pgn$/);
+  const pgn = await readFile(await download.path(), 'utf8');
+  expect(pgn).toContain('[Event "PawnForge analysis"]');
+  expect(pgn).toContain('[Result "0-1"]');
+  expect(pgn).toContain('1. f3 e5 2. g4 Qh4# 0-1');
+
+  await page.locator('#fenInput').fill('4k3/P7/8/8/8/8/8/4K3 w - - 0 1');
+  await page.locator('#loadFenBtn').click();
+  const [custom] = await Promise.all([page.waitForEvent('download'), page.locator('#downloadPgnBtn').click()]);
+  const customPgn = await readFile(await custom.path(), 'utf8');
+  expect(customPgn).toContain('[SetUp "1"]');
+  expect(customPgn).toContain('[FEN "4k3/P7/8/8/8/8/8/4K3 w - - 0 1"]');
+});
+
+test('the board history and selected move survive a reload; a corrupt save starts fresh', async ({ page }) => {
+  await load(page);
+  await drag(page, 'e2', 'e4');
+  await drag(page, 'e7', 'e5');
+  await page.locator('#moveNavPrev').click();
+  await expect(page.locator('#fenInput')).toHaveValue(afterE4);
+
+  await page.reload();
+  await expect(page.locator('#board img')).toHaveCount(32);
+  await expect(page.locator('#moveList .move-san')).toHaveText(['e4', 'e5']);
+  await expect(page.locator('#moveList .move-san.active')).toHaveText('e4');
+  await expect(page.locator('#fenInput')).toHaveValue(afterE4);
+  await expect(page.locator('#board .square-e4 img')).toHaveCount(1);
+  await page.locator('#moveNavNext').click();
+  await expect(page.locator('#board .square-e5 img')).toHaveCount(1);
+
+  await page.evaluate(() => localStorage.setItem('pawnforge_session', JSON.stringify({ initialFen: 'not a fen', moves: [{ from: 'e2', to: 'e5' }], ply: 0 })));
+  await page.reload();
+  await expect(page.locator('#board img')).toHaveCount(32);
+  await expect(page.locator('#fenInput')).toHaveValue(start);
+  await expect(page.locator('#moveList .move-san')).toHaveCount(0);
+});
+
+test('position analysis draws arrows for the top moves when the coach is off', async ({ page }) => {
+  await load(page);
+  await page.route('**/api/analyze/position', route => route.fulfill({ json: {
+    bestEvalCp: 30,
+    topMoves: [{ uci: 'e2e4', evalCp: 30, pv: 'e2e4' }, { uci: 'd2d4', evalCp: 25, pv: 'd2d4' }, { uci: 'g1f3', evalCp: 20, pv: 'g1f3' }]
+  } }));
+  await page.locator('#analyzePositionBtn').click();
+  await expect(page.locator('#boardArrowOverlay path')).toHaveCount(3);
+  // The best move is drawn last so it sits on top of the others.
+  await expect(page.locator('#boardArrowOverlay path').last()).toHaveClass('coach-arrow-path');
+  await drag(page, 'e2', 'e4');
+  await expect(page.locator('#boardArrowOverlay path')).toHaveCount(0);
+});
+
+test('recent games can be imported by username and loaded for review', async ({ page }) => {
+  await load(page);
+  const game = { variant: 'standard', pgn: '[White "alice"]\n[Black "bob"]\n[Result "1-0"]\n[UTCDate "2026.09.20"]\n\n1. e4 e5 2. Qh5 Nc6 3. Bc4 Nf6 4. Qxf7# 1-0' };
+  let requested = '';
+  await page.route('https://lichess.org/api/games/user/**', route => {
+    requested = route.request().url();
+    return route.fulfill({ headers: { 'access-control-allow-origin': '*' }, contentType: 'application/x-ndjson', body: `${JSON.stringify(game)}\n` });
+  });
+  await page.locator('[data-tab="game-review"]').click();
+  await page.getByRole('textbox', { name: 'Username' }).fill('alice');
+  await page.getByRole('textbox', { name: 'Username' }).press('Enter');
+  const result = page.getByRole('button', { name: /alice vs bob/ });
+  await expect(result).toContainText('1-0 · 2026-09-20');
+  expect(requested).toContain('/api/games/user/alice?max=10');
+  await result.click();
+  await expect(page.locator('#pgnInput')).toHaveValue(game.pgn);
+  await expect(page.locator('#analyzeGameBtn')).toBeFocused();
+
+  await page.route('https://lichess.org/api/games/user/**', route => route.fulfill({ status: 429, headers: { 'access-control-allow-origin': '*' }, body: '{}' }));
+  await page.locator('#importGamesBtn').click();
+  await expect(page.locator('#importStatus')).toContainText('rate limiting');
+  await expect(page.locator('#importResults')).toBeHidden();
 });

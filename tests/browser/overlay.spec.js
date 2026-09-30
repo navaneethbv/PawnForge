@@ -236,3 +236,115 @@ test('the blunder detector recognises castling, en passant and promotion, and sk
   await expect(page.locator('#pawnforge-hud-msg')).toContainText('G1 to F3');
   await expect(verdict).toBeEmpty();
 });
+
+const fiveLines = [
+  { uci: 'e2e4', evalCp: 100, pv: 'e2e4' },
+  { uci: 'd2d4', evalCp: 90, pv: 'd2d4' },
+  { uci: 'g1f3', evalCp: 30, pv: 'g1f3' },
+  { uci: 'c2c4', evalCp: -20, pv: 'c2c4' },
+  { uci: 'f2f3', evalCp: -200, pv: 'f2f3' }
+];
+
+async function useStartFen(page) {
+  await page.locator('#pawnforge-fen').fill(start);
+  await page.locator('#pawnforge-use-fen').click();
+}
+
+test('five candidate lines are requested and listed best first', async ({ page }) => {
+  const multiPvs = [];
+  await page.route('**/api/analyze/position', async (route) => {
+    multiPvs.push(route.request().postDataJSON().settings.multiPv);
+    await route.fulfill({ json: { topMoves: fiveLines } });
+  });
+  await page.setContent('<!doctype html><body></body>');
+  await injectOverlay(page);
+  await useStartFen(page);
+  const rows = page.locator('#pawnforge-hud-candidates button');
+  await expect(rows).toHaveCount(5);
+  await expect(page.locator('.pawnforge-candidate-rank')).toHaveText(['#1', '#2', '#3', '#4', '#5']);
+  await expect(page.locator('.pawnforge-candidate-move')).toHaveText(['E2 ➜ E4', 'D2 ➜ D4', 'G1 ➜ F3', 'C2 ➜ C4', 'F2 ➜ F3']);
+  await expect(rows.first()).toHaveClass(/active/);
+  expect(multiPvs.at(-1)).toBe(5);
+});
+
+test('the minimized overlay keeps analysing and shows the suggested move', async ({ page }) => {
+  const fens = await routeAnalysis(page);
+  await chessComFixture(page);
+  await injectOverlay(page);
+  await page.locator('#pawnforge-approximate').check();
+  await expect(page.locator('#pawnforge-hud-candidates button').first()).toBeVisible();
+
+  const minimize = page.getByRole('button', { name: 'Minimize PawnForge Coach' });
+  await minimize.click();
+  const expand = page.getByRole('button', { name: 'Expand PawnForge Coach' });
+  await expect(expand).toHaveAttribute('aria-expanded', 'false');
+  await expect(page.locator('#pawnforge-hud-body')).toBeHidden();
+  await expect(page.locator('#pawnforge-mini-summary')).toHaveText('H7➜H6 -0.20');
+  await expect(page.locator('[data-pawnforge-pointer]').first()).toBeVisible();
+
+  // A move on the board is still analysed while minimized.
+  const requestsBefore = fens.length;
+  await page.evaluate(() => {
+    const pawn = document.querySelector('.piece.square-87');
+    pawn.classList.replace('square-87', 'square-86');
+    pawn.style.top = '120px';
+  });
+  await expect.poll(() => fens.length).toBeGreaterThan(requestsBefore);
+
+  await expand.click();
+  await expect(page.locator('#pawnforge-hud-body')).toBeVisible();
+  await expect(minimize).toHaveAttribute('aria-expanded', 'true');
+});
+
+test('weaker moves suggests an inaccuracy, never a mistake, and falls back to the best line', async ({ page }) => {
+  let lines = fiveLines;
+  await page.route('**/api/analyze/position', (route) => route.fulfill({ json: { topMoves: lines } }));
+  await page.setContent('<!doctype html><body></body>');
+  await injectOverlay(page);
+  await useStartFen(page);
+  await expect(page.locator('#pawnforge-hud-candidates button')).toHaveCount(5);
+
+  // Losses against +1.00 are 0.10, 0.70, 1.20 and 3.00 pawns: 1.20 is the largest inaccuracy.
+  await page.locator('#pawnforge-weaker').check();
+  const rows = page.locator('#pawnforge-hud-candidates button');
+  await expect(rows.nth(3)).toHaveClass(/active/);
+  await expect(rows.nth(3)).toContainText('suggested');
+  await expect(page.locator('#pawnforge-hud-msg')).toContainText('about 1.2 pawns below best');
+
+  // Only a 0.10 loss and a blunder are available: take the small loss, never the blunder.
+  lines = [fiveLines[0], fiveLines[1], fiveLines[4]];
+  await page.locator('#pawnforge-analyze').click();
+  await expect(rows).toHaveCount(3);
+  await expect(rows.nth(1)).toHaveClass(/active/);
+
+  // Every alternative is a blunder: stay on the best line.
+  lines = [fiveLines[0], fiveLines[4]];
+  await page.locator('#pawnforge-analyze').click();
+  await expect(rows).toHaveCount(2);
+  await expect(rows.first()).toHaveClass(/active/);
+  await expect(page.locator('#pawnforge-hud-msg')).toContainText('should move');
+
+  await page.locator('#pawnforge-weaker').uncheck();
+  lines = fiveLines;
+  await page.locator('#pawnforge-analyze').click();
+  await expect(rows).toHaveCount(5);
+  await expect(rows.first()).toHaveClass(/active/);
+});
+
+test('minimized and weaker-move settings are saved in extension storage', async ({ page }) => {
+  await routeAnalysis(page);
+  await page.setContent('<!doctype html><body></body>');
+  await page.evaluate(() => {
+    window.saved = {};
+    window.chrome = {
+      runtime: { id: 'test', sendMessage: (_m, cb) => { if (typeof cb === 'function') cb({ fen: null }); return Promise.resolve({ error: 'offline' }); }, onMessage: { addListener: () => {} } },
+      storage: { local: { get: async () => ({ minimized: true, weaker: true }), set: async (value) => { Object.assign(window.saved, value); } } }
+    };
+  });
+  await injectOverlay(page);
+  await expect(page.getByRole('button', { name: 'Expand PawnForge Coach' })).toBeVisible();
+  await page.getByRole('button', { name: 'Expand PawnForge Coach' }).click();
+  await expect(page.locator('#pawnforge-weaker')).toBeChecked();
+  await page.locator('#pawnforge-weaker').uncheck();
+  await expect.poll(() => page.evaluate(() => window.saved)).toMatchObject({ minimized: false, weaker: false });
+});

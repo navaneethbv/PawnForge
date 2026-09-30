@@ -923,7 +923,8 @@
     explanation.style.cssText = 'margin-top:6px;color:#cbd5e1;font-size:11px;';
     const loss = weakerLoss(candidate);
     const advice = loss === null ? 'should move' : `could play a weaker move (about ${(loss / 100).toFixed(1)} pawns below best):`;
-    explanation.textContent = `${turn} ${advice} the ${pieceName} on ${from} to ${to}${moveLine ? ` · ${moveLine}` : ''}`;
+    const lineSuffix = moveLine ? ` · ${moveLine}` : '';
+    explanation.textContent = `${turn} ${advice} the ${pieceName} on ${from} to ${to}${lineSuffix}`;
     msgEl.append(summary, explanation);
     updateMiniSummary(candidate);
     candidateEl.querySelectorAll('.pawnforge-candidate-pill').forEach((element, candidateIndex) => {
@@ -962,7 +963,8 @@
   function updateMiniSummary(candidate) {
     const move = `${candidate.uci.slice(0, 2).toUpperCase()}➜${candidate.uci.slice(2, 4).toUpperCase()}`;
     const verdictLabel = verdictEl.querySelector('.pawnforge-verdict-label')?.textContent;
-    miniSummaryEl.textContent = `${move} ${formatEvaluation(candidate.evalCp)}${verdictLabel ? ` · ${verdictLabel}` : ''}`;
+    const verdictSuffix = verdictLabel ? ` · ${verdictLabel}` : '';
+    miniSummaryEl.textContent = `${move} ${formatEvaluation(candidate.evalCp)}${verdictSuffix}`;
   }
 
   function renderCandidates(candidates) {
@@ -1152,19 +1154,34 @@
   // Settings the user changes before storage finishes loading must not be overwritten by it.
   const editedSettings = new Set();
 
+  // Only the loopback analysis endpoint is accepted, whether it comes from storage or the API field.
+  function parseLocalEndpoint(value) {
+    let url;
+    try {
+      url = new URL(String(value).trim());
+    } catch (_error) {
+      return null;
+    }
+    const local = url.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(url.hostname);
+    return local && !url.username && !url.password && url.pathname === '/api/analyze/position' ? url : null;
+  }
+
+  const isBoolean = (value) => typeof value === 'boolean';
+
   async function loadSettings() {
     if (!extensionStorage) return;
     try {
       const stored = await extensionStorage.get(['endpoint', 'sideMode', 'approximate', 'depth', 'weaker', 'minimized']);
-      if (typeof stored.endpoint === 'string' && !editedSettings.has('endpoint')) {
-        const url = new URL(stored.endpoint);
-        if (url.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(url.hostname) && !url.username && !url.password && url.pathname === '/api/analyze/position') endpoint = url.toString();
-      }
-      if (!editedSettings.has('sideMode') && (stored.sideMode === 'w' || stored.sideMode === 'b' || stored.sideMode === 'auto')) sideMode = stored.sideMode;
-      if (!editedSettings.has('approximate') && typeof stored.approximate === 'boolean') approximateEl.checked = stored.approximate;
-      if (!editedSettings.has('weaker') && typeof stored.weaker === 'boolean') weakerEl.checked = stored.weaker;
-      if (!editedSettings.has('minimized') && typeof stored.minimized === 'boolean') setMinimized(stored.minimized);
-      if (!editedSettings.has('depth') && DEPTH_CHOICES.includes(stored.depth)) depth = stored.depth;
+      // A stored value applies only when it is valid and the user has not changed that setting meanwhile.
+      const apply = (key, isValid, set) => {
+        if (!editedSettings.has(key) && isValid(stored[key])) set(stored[key]);
+      };
+      apply('endpoint', (value) => typeof value === 'string' && parseLocalEndpoint(value) !== null, (value) => { endpoint = parseLocalEndpoint(value).toString(); });
+      apply('sideMode', (value) => ['w', 'b', 'auto'].includes(value), (value) => { sideMode = value; });
+      apply('approximate', isBoolean, (value) => { approximateEl.checked = value; });
+      apply('weaker', isBoolean, (value) => { weakerEl.checked = value; });
+      apply('minimized', isBoolean, setMinimized);
+      apply('depth', (value) => DEPTH_CHOICES.includes(value), (value) => { depth = value; });
       sideEl.value = sideMode;
       depthEl.value = String(depth);
       if (!editedSettings.has('endpointField')) endpointEl.value = endpoint;
@@ -1285,8 +1302,8 @@
   endpointEl.addEventListener('input', () => editedSettings.add('endpointField'));
   saveEndpointEl.addEventListener('click', () => {
     try {
-      const value = new URL(endpointEl.value.trim());
-      if (value.protocol !== 'http:' || !['localhost', '127.0.0.1'].includes(value.hostname) || value.username || value.password || value.pathname !== '/api/analyze/position') throw new Error('Use http://127.0.0.1:PORT/api/analyze/position.');
+      const value = parseLocalEndpoint(endpointEl.value);
+      if (!value) throw new Error('Use http://127.0.0.1:PORT/api/analyze/position.');
       endpoint = value.toString();
       endpointEl.value = endpoint;
       editedSettings.add('endpoint');

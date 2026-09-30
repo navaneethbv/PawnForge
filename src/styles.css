@@ -790,13 +790,14 @@ label.field-label { margin-bottom: 6px; }
 
 .coach-candidates-list {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+  flex-direction: column;
+  gap: 4px;
   margin-top: 10px;
 }
 
 .coach-candidate-pill {
-  display: inline-flex;
+  display: flex;
+  width: 100%;
   align-items: center;
   gap: 6px;
   padding: 4px 8px;
@@ -810,6 +811,7 @@ label.field-label { margin-bottom: 6px; }
 }
 
 .coach-candidate-pill:hover { border-color: var(--text-dim); color: var(--text); }
+.coach-candidate-pill .coach-eval-tag { margin-left: auto; }
 .coach-candidate-pill.active { border-color: var(--success); color: var(--text); }
 .coach-candidate-pill .pill-rank { color: var(--text-dim); font-size: 11px; }
 

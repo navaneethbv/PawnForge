@@ -237,7 +237,8 @@ test('real-engine workflows render analysis, coach, explorer filters and a compl
   await page.locator('#resetBtn').click();
 
   await page.locator('.coach-toggle-label').click();
-  await expect(page.locator('.coach-candidate-pill')).toHaveCount(3);
+  await expect(page.locator('.coach-candidate-pill')).toHaveCount(5);
+  await expect(page.locator('.coach-candidate-pill .pill-rank')).toHaveText(['#1', '#2', '#3', '#4', '#5']);
   await page.locator('#applyCoachMoveBtn').click();
   await expect(page.locator('#moveList .move-san')).toHaveCount(1);
   await page.locator('.coach-toggle-label').click();

@@ -474,6 +474,8 @@ function renderAnalysisArrows() {
 }
 
 // ── Coach State & Multi-PV Analysis ──
+// Ranked coach lines, best first (the server allows up to five).
+const COACH_LINES = 5;
 let coachEnabled = false;
 let currentCoachMove = null;
 let coachCandidates = [];
@@ -521,7 +523,7 @@ async function updateCoachHint() {
 
   try {
     const fen = game.fen();
-    const data = await postJson('/api/analyze/position', { fen, settings: { depth: 10, multiPv: 3 } });
+    const data = await postJson('/api/analyze/position', { fen, settings: { depth: 10, multiPv: COACH_LINES } });
     if (thisReq !== coachReqId || !coachEnabled || fen !== game.fen()) return;
 
     if (!data.topMoves || data.topMoves.length === 0) {
@@ -578,9 +580,9 @@ function renderCoachCandidate(idx) {
 
   currentCoachMove = { from, to, promotion: promo, san, uci: cand.uci, evalCp: cand.evalCp };
 
-  // Draw the alternative arrows first so the selected one is on top.
+  // Draw the top alternatives first so the selected one is on top; more arrows would clutter the board.
   clearMoveArrow();
-  coachCandidates.slice(0, 3).forEach((c, i) => {
+  coachCandidates.slice(0, ARROW_STYLES.length).forEach((c, i) => {
     if (i !== activeCandidateIdx) renderMoveArrow(c.uci.substring(0, 2), c.uci.substring(2, 4), i + 1);
   });
   renderMoveArrow(from, to, 1);
@@ -596,7 +598,7 @@ function renderCoachCandidate(idx) {
   );
   el.applyCoachMoveBtn.hidden = false;
 
-  el.coachCandidates.replaceChildren(...coachCandidates.slice(0, 3).map((c, i) => h('button', {
+  el.coachCandidates.replaceChildren(...coachCandidates.slice(0, COACH_LINES).map((c, i) => h('button', {
     type: 'button',
     class: 'coach-candidate-pill' + (i === activeCandidateIdx ? ' active' : ''),
     'aria-pressed': String(i === activeCandidateIdx),

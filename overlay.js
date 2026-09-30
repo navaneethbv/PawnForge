@@ -37,9 +37,18 @@
   let active = true;
   let endpoint = DEFAULT_ENDPOINT;
   let sideMode = 'auto';
+  // Board placement a manual side choice was made for; the side to move changes after every move.
+  let manualSidePlacement = null;
   // Engine search depth; higher is stronger but slower.
   const DEPTH_CHOICES = [8, 12, 16, 20];
   let depth = DEPTH_CHOICES[0];
+  // Candidate lines requested per position (the server allows up to five).
+  const CANDIDATE_COUNT = 5;
+  // "Weaker moves" suggests a line that gives up this much (centipawns) against the best move:
+  // an inaccuracy, never a mistake or blunder.
+  const WEAKER_MIN_LOSS_CP = 40;
+  const WEAKER_MAX_LOSS_CP = 150;
+  let minimized = false;
   let lastPositionKey = '';
   let activeCandidates = [];
   let currentSnapshot = null;
@@ -60,6 +69,8 @@
   // A position must read the same on two consecutive polls before it is analysed, which skips
   // mid-animation frames while keeping move-to-analysis latency well under half a second.
   const POLL_INTERVAL_MS = 250;
+  // Board piece elements; lichess's drag "ghost" copy of a piece is not on the board.
+  const PIECE_SELECTOR = '.piece:not(.ghost), piece:not(.ghost), [data-piece]:not(.ghost), [data-color][data-type]:not(.ghost)';
   const POSITION_STABILITY_MS = 200;
 
   const style = document.createElement('style');
@@ -137,6 +148,7 @@
     .pawnforge-toggle input:checked + .pawnforge-slider::before { transform: translateX(13px); }
     #pawnforge-hud-body { color: #94a3b8; }
     #pawnforge-hud-msg { min-height: 34px; }
+    #pawnforge-hud-body > label { display: block; margin-top: 4px; }
     #pawnforge-verdict:empty { display: none; }
     #pawnforge-verdict {
       margin-bottom: 8px;
@@ -216,8 +228,40 @@
       color: #f1f5f9;
       font-weight: 600;
     }
-    .pawnforge-candidate-list { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 9px; }
-    .pawnforge-candidate-pill { padding: 3px 7px; font-size: 11px; }
+    .pawnforge-candidate-list { display: flex; flex-direction: column; gap: 4px; margin-top: 9px; }
+    .pawnforge-candidate-pill {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      width: 100%;
+      padding: 4px 8px;
+      font-size: 11px;
+      text-align: left;
+    }
+    .pawnforge-candidate-rank { width: 20px; color: #94a3b8; }
+    .pawnforge-candidate-move { flex: 1 1 auto; font-weight: 600; }
+    .pawnforge-candidate-eval { font-variant-numeric: tabular-nums; }
+    .pawnforge-candidate-note { color: #fbbf24; font-size: 10px; }
+    .pawnforge-header-actions { display: flex; align-items: center; gap: 8px; }
+    #pawnforge-minimize {
+      width: 24px;
+      height: 24px;
+      border: 1px solid rgba(148, 163, 184, 0.35);
+      border-radius: 6px;
+      background: rgba(51, 65, 85, 0.8);
+      color: #e2e8f0;
+      cursor: pointer;
+      font: inherit;
+      font-size: 14px;
+      line-height: 1;
+    }
+    #pawnforge-minimize:hover, #pawnforge-minimize:focus-visible { border-color: #22c55e; outline: none; }
+    #pawnforge-mini-summary { display: none; color: #f1f5f9; font-size: 12px; font-weight: 600; white-space: nowrap; }
+    #pawnforge-hud.pawnforge-minimized { width: auto; max-width: calc(100vw - 32px); padding: 8px 10px; }
+    #pawnforge-hud.pawnforge-minimized #pawnforge-hud-header { margin-bottom: 0; }
+    #pawnforge-hud.pawnforge-minimized #pawnforge-hud-body { display: none; }
+    #pawnforge-hud.pawnforge-minimized #pawnforge-mini-summary:not(:empty) { display: block; }
+    #pawnforge-hud.pawnforge-minimized #pawnforge-hud-title-text { display: none; }
     .pawnforge-pointer {
       position: fixed;
       z-index: 2147483645;
@@ -253,18 +297,23 @@
   hud.setAttribute('aria-label', 'PawnForge Coach overlay');
   hud.innerHTML = `
     <div id="pawnforge-hud-header">
-      <div id="pawnforge-hud-title"><span id="pawnforge-hud-title-mark" aria-hidden="true">♟</span> PawnForge Coach</div>
-      <label class="pawnforge-toggle" title="Toggle coach assistance">
-        <input type="checkbox" id="pawnforge-coach-switch" checked />
-        <span class="pawnforge-slider" aria-hidden="true"></span>
-        <span>Coach</span>
-      </label>
+      <div id="pawnforge-hud-title"><span id="pawnforge-hud-title-mark" aria-hidden="true">♟</span> <span id="pawnforge-hud-title-text">PawnForge Coach</span></div>
+      <div id="pawnforge-mini-summary" aria-live="polite"></div>
+      <div class="pawnforge-header-actions">
+        <label class="pawnforge-toggle" title="Toggle coach assistance">
+          <input type="checkbox" id="pawnforge-coach-switch" checked />
+          <span class="pawnforge-slider" aria-hidden="true"></span>
+          <span>Coach</span>
+        </label>
+        <button id="pawnforge-minimize" type="button" aria-label="Minimize PawnForge Coach" aria-expanded="true" aria-controls="pawnforge-hud-body" title="Minimize">–</button>
+      </div>
     </div>
     <div id="pawnforge-hud-body">
       <div id="pawnforge-verdict" role="status" aria-live="polite"></div>
       <div id="pawnforge-hud-msg" role="status" aria-live="polite">Looking for a chess position...</div>
       <label><input id="pawnforge-approximate" type="checkbox" /> Analyze approximate DOM position (special move rights unknown)</label>
-      <div id="pawnforge-hud-candidates" class="pawnforge-candidate-list"></div>
+      <label title="Suggest a move that gives up some advantage (an inaccuracy), never a mistake or blunder"><input id="pawnforge-weaker" type="checkbox" /> Suggest weaker moves</label>
+      <div id="pawnforge-hud-candidates" class="pawnforge-candidate-list" title="Evaluations are from White's point of view, like the lichess and chess.com eval bars"></div>
       <div class="pawnforge-control-row">
         <label for="pawnforge-side">Side</label>
         <select id="pawnforge-side" aria-label="Side to move">
@@ -311,6 +360,9 @@
   const saveEndpointEl = hud.querySelector('#pawnforge-save-endpoint');
   const hintEl = hud.querySelector('#pawnforge-hint');
   const approximateEl = hud.querySelector('#pawnforge-approximate');
+  const weakerEl = hud.querySelector('#pawnforge-weaker');
+  const minimizeEl = hud.querySelector('#pawnforge-minimize');
+  const miniSummaryEl = hud.querySelector('#pawnforge-mini-summary');
   endpointEl.value = endpoint;
 
   function setMessage(text) {
@@ -337,6 +389,7 @@
   function clearAnalysisUi() {
     activeCandidates = [];
     candidateEl.replaceChildren();
+    miniSummaryEl.textContent = '';
     removePointers();
     clearVerdict();
   }
@@ -408,9 +461,15 @@
     }
     const scored = candidates.map((candidate) => ({
       ...candidate,
-      pieceCount: candidate.element.querySelectorAll('.piece, piece, [data-piece], [data-color][data-type]').length
+      pieceCount: candidate.element.querySelectorAll(PIECE_SELECTOR).length
     }));
-    const selected = scored.sort((a, b) => b.pieceCount - a.pieceCount || a.area - b.area)[0];
+    // A wrapper around a board holds the same pieces; keep the innermost element so the board's own
+    // orientation markers (lichess: cg-wrap.orientation-black around cg-board) apply.
+    const innermost = scored.filter((outer) => !scored.some((inner) => (
+      inner !== outer && outer.element.contains(inner.element) && inner.pieceCount >= outer.pieceCount
+    )));
+    // Several boards (lichess mini games beside the main one): the most pieces, then the largest board.
+    const selected = innermost.sort((a, b) => b.pieceCount - a.pieceCount || b.area - a.area)[0];
     return selected ? { ...selected, orientation: boardOrientation(selected.element) } : null;
   }
 
@@ -529,10 +588,9 @@
   function readDomPosition() {
     const board = findBoardModel();
     if (!board) return null;
-    const pieceSelectors = ['.piece', 'piece', '[data-piece]', '[data-color][data-type]'];
     const pieces = [];
     const seen = new Set();
-    for (const selector of pieceSelectors) {
+    for (const selector of PIECE_SELECTOR.split(', ')) {
       for (const element of board.element.querySelectorAll(selector)) {
         if (seen.has(element)) continue;
         seen.add(element);
@@ -578,7 +636,7 @@
       return { board, unstable: true };
     }
     const detectors = [
-      [() => (sideMode === 'w' || sideMode === 'b' ? sideMode : null), 'chosen manually'],
+      [() => manualSideFor(rows.join('/')), 'chosen manually'],
       [() => sideFromDom(board), 'board attributes'],
       [sideFromSelectedPly, 'move list'],
       [() => sideFromLastMoveHighlight(board, squares), 'last-move highlight'],
@@ -590,6 +648,18 @@
       if (side) return { fen: `${rows.join('/')} ${side} - - 0 1`, board, source: 'approximate visible board', approximate: true, sideSource };
     }
     return { board, sideUnknown: true };
+  }
+
+  // A manual side applies to the position it was chosen for; once a move changes the board,
+  // detection returns to Auto because the chosen side would now be the wrong one.
+  function manualSideFor(placement) {
+    if (sideMode !== 'w' && sideMode !== 'b') return null;
+    manualSidePlacement ??= placement;
+    if (manualSidePlacement === placement) return sideMode;
+    sideMode = 'auto';
+    sideEl.value = 'auto';
+    manualSidePlacement = null;
+    return null;
   }
 
   // lichess (live games): the running clock belongs to the side to move.
@@ -694,6 +764,16 @@
     pointerElements = [origin, target];
     document.body.append(origin, target);
     updatePointerPositions();
+  }
+
+  // Engine scores are from the side to move; show them from White's view like the sites' eval bars.
+  function whiteView(value, sideToMove) {
+    const score = Number(value);
+    return sideToMove === 'b' ? -score : score;
+  }
+
+  function currentSideToMove() {
+    return (currentSnapshot?.fen || '').split(' ')[1] === 'b' ? 'b' : 'w';
   }
 
   function formatEvaluation(value) {
@@ -816,7 +896,9 @@
     const detail = document.createElement('div');
     detail.className = 'pawnforge-verdict-detail';
     const bestText = `${verdict.best.uci.slice(0, 2).toUpperCase()}➜${verdict.best.uci.slice(2, 4).toUpperCase()}`;
-    detail.textContent = `${moverName}'s eval ${formatEvaluation(verdict.bestCp)} → ${formatEvaluation(verdict.playedCp)}. Better was ${bestText}.`;
+    const bestWhite = formatEvaluation(whiteView(verdict.bestCp, verdict.mover));
+    const playedWhite = formatEvaluation(whiteView(verdict.playedCp, verdict.mover));
+    detail.textContent = `Eval ${bestWhite} → ${playedWhite} (White's view). Better was ${bestText}.`;
     verdictEl.append(detail);
     if (verdict.category.key === 'inaccuracy') return;
     verdictMarker = document.createElement('div');
@@ -868,31 +950,93 @@
     move.textContent = `${from} ➜ ${to}`;
     const evaluation = document.createElement('span');
     evaluation.className = 'pawnforge-eval-tag';
-    evaluation.textContent = formatEvaluation(candidate.evalCp);
+    evaluation.textContent = formatEvaluation(whiteView(candidate.evalCp, currentSideToMove()));
     summary.append(move, evaluation);
     const explanation = document.createElement('div');
     explanation.style.cssText = 'margin-top:6px;color:#cbd5e1;font-size:11px;';
-    explanation.textContent = `${turn} should move the ${pieceName} on ${from} to ${to}${moveLine ? ` · ${moveLine}` : ''}`;
+    const loss = weakerLoss(candidate);
+    const advice = loss === null ? 'should move' : `could play a weaker move (about ${(loss / 100).toFixed(1)} pawns below best):`;
+    const lineSuffix = moveLine ? ` · ${moveLine}` : '';
+    explanation.textContent = `${turn} ${advice} the ${pieceName} on ${from} to ${to}${lineSuffix}`;
     msgEl.append(summary, explanation);
+    updateMiniSummary(candidate);
     candidateEl.querySelectorAll('.pawnforge-candidate-pill').forEach((element, candidateIndex) => {
       element.classList.toggle('active', candidateIndex === index);
     });
     renderSquarePointers(candidate.uci.slice(0, 2), candidate.uci.slice(2, 4));
   }
 
+  // Centipawns a candidate gives up against the best line, or null for the best line itself.
+  function weakerLoss(candidate) {
+    const best = activeCandidates[0];
+    if (!weakerEl.checked || !best || candidate === best) return null;
+    return Math.max(0, clampEval(Number(best.evalCp)) - clampEval(Number(candidate.evalCp)));
+  }
+
+  // The line "Suggest weaker moves" recommends: the biggest loss within the inaccuracy band,
+  // else the closest weaker line under the cap, else the best line when every alternative is worse.
+  function weakerCandidateIndex(candidates) {
+    const bestCp = clampEval(Number(candidates[0]?.evalCp));
+    if (!Number.isFinite(bestCp)) return 0;
+    let chosen = 0;
+    let chosenLoss = -1;
+    candidates.forEach((candidate, index) => {
+      const loss = bestCp - clampEval(Number(candidate?.evalCp));
+      if (index === 0 || !Number.isFinite(loss) || loss > WEAKER_MAX_LOSS_CP) return;
+      const inBand = loss >= WEAKER_MIN_LOSS_CP;
+      const chosenInBand = chosenLoss >= WEAKER_MIN_LOSS_CP;
+      if ((inBand && (!chosenInBand || loss > chosenLoss)) || (!inBand && !chosenInBand && loss > chosenLoss)) {
+        chosen = index;
+        chosenLoss = loss;
+      }
+    });
+    return chosen;
+  }
+
+  function updateMiniSummary(candidate) {
+    const move = `${candidate.uci.slice(0, 2).toUpperCase()}➜${candidate.uci.slice(2, 4).toUpperCase()}`;
+    const verdictLabel = verdictEl.querySelector('.pawnforge-verdict-label')?.textContent;
+    const verdictSuffix = verdictLabel ? ` · ${verdictLabel}` : '';
+    miniSummaryEl.textContent = `${move} ${formatEvaluation(whiteView(candidate.evalCp, currentSideToMove()))}${verdictSuffix}`;
+  }
+
   function renderCandidates(candidates) {
     candidateEl.replaceChildren();
-    activeCandidates = Array.isArray(candidates) ? candidates.slice(0, 5) : [];
+    activeCandidates = Array.isArray(candidates) ? candidates.filter((c) => typeof c?.uci === 'string').slice(0, CANDIDATE_COUNT) : [];
+    const suggested = weakerEl.checked ? weakerCandidateIndex(activeCandidates) : 0;
     activeCandidates.forEach((candidate, index) => {
-      if (!candidate || typeof candidate.uci !== 'string') return;
       const pill = document.createElement('button');
       pill.type = 'button';
-      pill.className = `pawnforge-candidate-pill${index === 0 ? ' active' : ''}`;
-      pill.textContent = `#${index + 1} ${candidate.uci.slice(0, 2).toUpperCase()}-${candidate.uci.slice(2, 4).toUpperCase()} (${formatEvaluation(candidate.evalCp)})`;
+      pill.className = 'pawnforge-candidate-pill';
+      const rank = document.createElement('span');
+      rank.className = 'pawnforge-candidate-rank';
+      rank.textContent = `#${index + 1}`;
+      const move = document.createElement('span');
+      move.className = 'pawnforge-candidate-move';
+      move.textContent = `${candidate.uci.slice(0, 2).toUpperCase()} ➜ ${candidate.uci.slice(2, 4).toUpperCase()}`;
+      const evaluation = document.createElement('span');
+      evaluation.className = 'pawnforge-candidate-eval';
+      evaluation.textContent = formatEvaluation(whiteView(candidate.evalCp, currentSideToMove()));
+      pill.append(rank, move, evaluation);
+      if (weakerEl.checked && index === suggested && index > 0) {
+        const note = document.createElement('span');
+        note.className = 'pawnforge-candidate-note';
+        note.textContent = 'suggested';
+        pill.append(note);
+      }
       pill.addEventListener('click', () => selectCandidate(index));
       candidateEl.appendChild(pill);
     });
-    if (activeCandidates.length) selectCandidate(0);
+    if (activeCandidates.length) selectCandidate(suggested);
+  }
+
+  function setMinimized(next) {
+    minimized = next;
+    hud.classList.toggle('pawnforge-minimized', minimized);
+    minimizeEl.textContent = minimized ? '+' : '–';
+    minimizeEl.title = minimized ? 'Expand' : 'Minimize';
+    minimizeEl.setAttribute('aria-label', minimized ? 'Expand PawnForge Coach' : 'Minimize PawnForge Coach');
+    minimizeEl.setAttribute('aria-expanded', String(!minimized));
   }
 
   async function analyzePosition(force = false, { optIn = false } = {}) {
@@ -979,7 +1123,7 @@
     analysisController = new AbortController();
 
     try {
-      const payload = { fen: snapshot.fen, settings: { depth, multiPv: 3 } };
+      const payload = { fen: snapshot.fen, settings: { depth, multiPv: CANDIDATE_COUNT } };
       let data;
       if (isExtension) {
         if (!extensionContextAlive()) {
@@ -1017,8 +1161,8 @@
         renderVerdict(verdict);
         return;
       }
-      renderCandidates(data.topMoves);
       renderVerdict(verdict);
+      renderCandidates(data.topMoves);
       const turn = snapshot.fen.split(' ')[1] === 'b' ? 'Black' : 'White';
       setHint(snapshot.approximate ? `Approximate: ${turn} to move (${snapshot.sideSource}); castling and en passant disabled; draw counters unknown. Paste a full FEN for accurate results.` : `Source: ${snapshot.source || 'position'}. Select a line to move the highlights.`);
     } catch (error) {
@@ -1043,18 +1187,33 @@
   // Settings the user changes before storage finishes loading must not be overwritten by it.
   const editedSettings = new Set();
 
+  // Only the loopback analysis endpoint is accepted, whether it comes from storage or the API field.
+  function parseLocalEndpoint(value) {
+    let url;
+    try {
+      url = new URL(String(value).trim());
+    } catch (_error) {
+      return null;
+    }
+    const local = url.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(url.hostname);
+    return local && !url.username && !url.password && url.pathname === '/api/analyze/position' ? url : null;
+  }
+
+  const isBoolean = (value) => typeof value === 'boolean';
+
   async function loadSettings() {
     if (!extensionStorage) return;
     try {
-      const stored = await extensionStorage.get(['endpoint', 'sideMode', 'approximate', 'depth']);
-      if (typeof stored.endpoint === 'string' && !editedSettings.has('endpoint')) {
-        const url = new URL(stored.endpoint);
-        if (url.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(url.hostname) && !url.username && !url.password && url.pathname === '/api/analyze/position') endpoint = url.toString();
-      }
-      if (!editedSettings.has('sideMode') && (stored.sideMode === 'w' || stored.sideMode === 'b' || stored.sideMode === 'auto')) sideMode = stored.sideMode;
-      if (!editedSettings.has('approximate') && typeof stored.approximate === 'boolean') approximateEl.checked = stored.approximate;
-      if (!editedSettings.has('depth') && DEPTH_CHOICES.includes(stored.depth)) depth = stored.depth;
-      sideEl.value = sideMode;
+      const stored = await extensionStorage.get(['endpoint', 'approximate', 'depth', 'weaker', 'minimized']);
+      // A stored value applies only when it is valid and the user has not changed that setting meanwhile.
+      const apply = (key, isValid, set) => {
+        if (!editedSettings.has(key) && isValid(stored[key])) set(stored[key]);
+      };
+      apply('endpoint', (value) => typeof value === 'string' && parseLocalEndpoint(value) !== null, (value) => { endpoint = parseLocalEndpoint(value).toString(); });
+      apply('approximate', isBoolean, (value) => { approximateEl.checked = value; });
+      apply('weaker', isBoolean, (value) => { weakerEl.checked = value; });
+      apply('minimized', isBoolean, setMinimized);
+      apply('depth', (value) => DEPTH_CHOICES.includes(value), (value) => { depth = value; });
       depthEl.value = String(depth);
       if (!editedSettings.has('endpointField')) endpointEl.value = endpoint;
     } catch (_error) {
@@ -1065,7 +1224,7 @@
   function persistSettings() {
     if (!extensionStorage || !extensionContextAlive()) return;
     try {
-      extensionStorage.set({ endpoint, sideMode, depth, approximate: approximateEl.checked }).catch(() => {});
+      extensionStorage.set({ endpoint, depth, minimized, approximate: approximateEl.checked, weaker: weakerEl.checked }).catch(() => {});
     } catch (_error) {
       // The extension was reloaded; the next poll shuts this orphaned instance down.
     }
@@ -1132,9 +1291,20 @@
     void analyzePosition(true);
   });
   switchEl.addEventListener('change', () => setActive(switchEl.checked));
+  minimizeEl.addEventListener('click', () => {
+    setMinimized(!minimized);
+    editedSettings.add('minimized');
+    persistSettings();
+  });
+  weakerEl.addEventListener('change', () => {
+    editedSettings.add('weaker');
+    persistSettings();
+    // Re-rank the lines already on screen; no new engine request is needed.
+    if (activeCandidates.length) renderCandidates(activeCandidates);
+  });
   sideEl.addEventListener('change', () => {
     sideMode = sideEl.value;
-    editedSettings.add('sideMode');
+    manualSidePlacement = null;
     persistSettings();
     lastPositionKey = '';
     void analyzePosition(true);
@@ -1163,8 +1333,8 @@
   endpointEl.addEventListener('input', () => editedSettings.add('endpointField'));
   saveEndpointEl.addEventListener('click', () => {
     try {
-      const value = new URL(endpointEl.value.trim());
-      if (value.protocol !== 'http:' || !['localhost', '127.0.0.1'].includes(value.hostname) || value.username || value.password || value.pathname !== '/api/analyze/position') throw new Error('Use http://127.0.0.1:PORT/api/analyze/position.');
+      const value = parseLocalEndpoint(endpointEl.value);
+      if (!value) throw new Error('Use http://127.0.0.1:PORT/api/analyze/position.');
       endpoint = value.toString();
       endpointEl.value = endpoint;
       editedSettings.add('endpoint');

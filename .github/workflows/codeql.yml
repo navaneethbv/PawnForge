@@ -44,10 +44,12 @@ jobs:
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build }}
-          # vendor/ holds unmodified third-party libraries; their findings belong upstream.
+          # vendor/ and engine/Stockfish/ hold unmodified third-party code; their findings belong upstream.
+          # The C/C++ job keeps Stockfish because it is the only C++ in the repository.
           config: |
             paths-ignore:
               - vendor/**
+              ${{ matrix.language != 'c-cpp' && '- engine/Stockfish/**' || '' }}
       - name: Build macOS package for CodeQL
         if: matrix.language == 'swift'
         run: swift build --package-path macos --build-path "$RUNNER_TEMP/codeql-swift" -Xswiftc -warnings-as-errors

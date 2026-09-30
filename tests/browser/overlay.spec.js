@@ -236,3 +236,189 @@ test('the blunder detector recognises castling, en passant and promotion, and sk
   await expect(page.locator('#pawnforge-hud-msg')).toContainText('G1 to F3');
   await expect(verdict).toBeEmpty();
 });
+
+const fiveLines = [
+  { uci: 'e2e4', evalCp: 100, pv: 'e2e4' },
+  { uci: 'd2d4', evalCp: 90, pv: 'd2d4' },
+  { uci: 'g1f3', evalCp: 30, pv: 'g1f3' },
+  { uci: 'c2c4', evalCp: -20, pv: 'c2c4' },
+  { uci: 'f2f3', evalCp: -200, pv: 'f2f3' }
+];
+
+async function useStartFen(page) {
+  await page.locator('#pawnforge-fen').fill(start);
+  await page.locator('#pawnforge-use-fen').click();
+}
+
+test('five candidate lines are requested and listed best first', async ({ page }) => {
+  const multiPvs = [];
+  await page.route('**/api/analyze/position', async (route) => {
+    multiPvs.push(route.request().postDataJSON().settings.multiPv);
+    await route.fulfill({ json: { topMoves: fiveLines } });
+  });
+  await page.setContent('<!doctype html><body></body>');
+  await injectOverlay(page);
+  await useStartFen(page);
+  const rows = page.locator('#pawnforge-hud-candidates button');
+  await expect(rows).toHaveCount(5);
+  await expect(page.locator('.pawnforge-candidate-rank')).toHaveText(['#1', '#2', '#3', '#4', '#5']);
+  await expect(page.locator('.pawnforge-candidate-move')).toHaveText(['E2 ➜ E4', 'D2 ➜ D4', 'G1 ➜ F3', 'C2 ➜ C4', 'F2 ➜ F3']);
+  await expect(rows.first()).toHaveClass(/active/);
+  expect(multiPvs.at(-1)).toBe(5);
+});
+
+test('the minimized overlay keeps analysing and shows the suggested move', async ({ page }) => {
+  const fens = await routeAnalysis(page);
+  await chessComFixture(page);
+  await injectOverlay(page);
+  await page.locator('#pawnforge-approximate').check();
+  await expect(page.locator('#pawnforge-hud-candidates button').first()).toBeVisible();
+
+  const minimize = page.getByRole('button', { name: 'Minimize PawnForge Coach' });
+  await minimize.click();
+  const expand = page.getByRole('button', { name: 'Expand PawnForge Coach' });
+  await expect(expand).toHaveAttribute('aria-expanded', 'false');
+  await expect(page.locator('#pawnforge-hud-body')).toBeHidden();
+  // Black to move: the engine's -0.20 for Black is +0.20 from White's view, like the site's eval bar.
+  await expect(page.locator('#pawnforge-mini-summary')).toHaveText('H7➜H6 +0.20');
+  await expect(page.locator('[data-pawnforge-pointer]').first()).toBeVisible();
+
+  // A move on the board is still analysed while minimized.
+  const requestsBefore = fens.length;
+  await page.evaluate(() => {
+    const pawn = document.querySelector('.piece.square-87');
+    pawn.classList.replace('square-87', 'square-86');
+    pawn.style.top = '120px';
+  });
+  await expect.poll(() => fens.length).toBeGreaterThan(requestsBefore);
+
+  await expand.click();
+  await expect(page.locator('#pawnforge-hud-body')).toBeVisible();
+  await expect(minimize).toHaveAttribute('aria-expanded', 'true');
+});
+
+test('weaker moves suggests an inaccuracy, never a mistake, and falls back to the best line', async ({ page }) => {
+  let lines = fiveLines;
+  await page.route('**/api/analyze/position', (route) => route.fulfill({ json: { topMoves: lines } }));
+  await page.setContent('<!doctype html><body></body>');
+  await injectOverlay(page);
+  await useStartFen(page);
+  await expect(page.locator('#pawnforge-hud-candidates button')).toHaveCount(5);
+
+  // Losses against +1.00 are 0.10, 0.70, 1.20 and 3.00 pawns: 1.20 is the largest inaccuracy.
+  await page.locator('#pawnforge-weaker').check();
+  const rows = page.locator('#pawnforge-hud-candidates button');
+  await expect(rows.nth(3)).toHaveClass(/active/);
+  await expect(rows.nth(3)).toContainText('suggested');
+  await expect(page.locator('#pawnforge-hud-msg')).toContainText('about 1.2 pawns below best');
+
+  // Only a 0.10 loss and a blunder are available: take the small loss, never the blunder.
+  lines = [fiveLines[0], fiveLines[1], fiveLines[4]];
+  await page.locator('#pawnforge-analyze').click();
+  await expect(rows).toHaveCount(3);
+  await expect(rows.nth(1)).toHaveClass(/active/);
+
+  // Every alternative is a blunder: stay on the best line.
+  lines = [fiveLines[0], fiveLines[4]];
+  await page.locator('#pawnforge-analyze').click();
+  await expect(rows).toHaveCount(2);
+  await expect(rows.first()).toHaveClass(/active/);
+  await expect(page.locator('#pawnforge-hud-msg')).toContainText('should move');
+
+  await page.locator('#pawnforge-weaker').uncheck();
+  lines = fiveLines;
+  await page.locator('#pawnforge-analyze').click();
+  await expect(rows).toHaveCount(5);
+  await expect(rows.first()).toHaveClass(/active/);
+});
+
+test('minimized and weaker-move settings are saved in extension storage', async ({ page }) => {
+  await routeAnalysis(page);
+  await page.setContent('<!doctype html><body></body>');
+  await page.evaluate(() => {
+    window.saved = {};
+    window.chrome = {
+      runtime: { id: 'test', sendMessage: (_m, cb) => { if (typeof cb === 'function') cb({ fen: null }); return Promise.resolve({ error: 'offline' }); }, onMessage: { addListener: () => {} } },
+      storage: { local: { get: async () => ({ minimized: true, weaker: true }), set: async (value) => { Object.assign(window.saved, value); } } }
+    };
+  });
+  await injectOverlay(page);
+  await expect(page.getByRole('button', { name: 'Expand PawnForge Coach' })).toBeVisible();
+  await page.getByRole('button', { name: 'Expand PawnForge Coach' }).click();
+  await expect(page.locator('#pawnforge-weaker')).toBeChecked();
+  await page.locator('#pawnforge-weaker').uncheck();
+  await expect.poll(() => page.evaluate(() => window.saved)).toMatchObject({ minimized: false, weaker: false });
+  // The side to move changes every move, so a manual choice is never saved.
+  expect(await page.evaluate(() => 'sideMode' in window.saved)).toBe(false);
+});
+
+// Mirrors a lichess game seen from Black: chessground pieces are positioned by transform inside
+// cg-board, the flip marker sits on the enclosing cg-wrap, a drag "ghost" piece lives outside
+// cg-board, and a mini game board elsewhere on the page has its own pieces.
+async function lichessBlackFixture(page) {
+  await page.setContent(`<!doctype html><html><body style="margin:0">
+    <div class="round__app__board main-board" style="position:relative;width:480px;height:480px">
+      <div class="cg-wrap orientation-black manipulable" style="width:480px;height:480px">
+        <cg-container style="display:block;position:relative;width:480px;height:480px">
+          <cg-board style="display:block;position:absolute;inset:0"></cg-board>
+          <piece class="ghost white pawn" style="position:absolute;width:60px;height:60px;visibility:hidden"></piece>
+        </cg-container>
+      </div>
+    </div>
+    <div class="rclock rclock-bottom rclock-black">1:00</div><div class="rclock rclock-top rclock-white running">1:00</div>
+    <a class="mini-game"><div class="cg-wrap orientation-black" style="width:200px;height:200px">
+      <cg-container style="display:block;position:relative;width:200px;height:200px"><cg-board style="display:block;position:absolute;inset:0">
+        <piece class="white king" style="position:absolute;width:25px;height:25px;transform:translate(0px,0px)"></piece>
+        <piece class="black king" style="position:absolute;width:25px;height:25px;transform:translate(100px,100px)"></piece>
+      </cg-board></cg-container></div></a>
+  </body></html>`);
+  await page.evaluate((placement) => {
+    const board = document.querySelector('.main-board cg-board');
+    const names = { p: 'pawn', n: 'knight', b: 'bishop', r: 'rook', q: 'queen', k: 'king' };
+    placement.split('/').forEach((row, rowIndex) => {
+      let file = 0;
+      for (const token of row) {
+        if (/\d/.test(token)) { file += Number(token); continue; }
+        const rank = 8 - rowIndex;
+        const piece = document.createElement('piece');
+        piece.className = `${token === token.toUpperCase() ? 'white' : 'black'} ${names[token.toLowerCase()]}`;
+        // Seen from Black, h1 is top-left and a8 is bottom-right.
+        piece.style.cssText = `position:absolute;width:60px;height:60px;transform:translate(${(7 - file) * 60}px,${(rank - 1) * 60}px)`;
+        board.appendChild(piece);
+        file += 1;
+      }
+    });
+  }, start.split(' ')[0]);
+}
+
+test('a lichess board seen from Black is read the right way up', async ({ page }) => {
+  const fens = await routeAnalysis(page);
+  await lichessBlackFixture(page);
+  await injectOverlay(page);
+  await page.locator('#pawnforge-approximate').check();
+  await expect(page.locator('#pawnforge-hud-candidates button').first()).toBeVisible();
+  // White pawns on rank 2 and Black pawns on rank 7, White to move from the running clock.
+  expect(fens.at(-1)).toBe(`${start.split(' ')[0]} w - - 0 1`);
+  await expect(page.locator('#pawnforge-hint')).toContainText('White to move (running clock)');
+});
+
+test('a manual side applies to one position and returns to auto detect after a move', async ({ page }) => {
+  const fens = await routeAnalysis(page);
+  await chessComFixture(page);
+  await injectOverlay(page);
+  await page.locator('#pawnforge-approximate').check();
+  await expect.poll(() => fens.at(-1)).toBe(blackToMove);
+
+  await page.locator('#pawnforge-side').selectOption('w');
+  await expect.poll(() => fens.at(-1)).toBe(`${board} w - - 0 1`);
+  await expect(page.locator('#pawnforge-hint')).toContainText('chosen manually');
+
+  await page.evaluate(() => {
+    const pawn = document.querySelector('.piece.square-87');
+    pawn.classList.replace('square-87', 'square-86');
+    pawn.style.top = '120px';
+  });
+  await expect(page.locator('#pawnforge-side')).toHaveValue('auto');
+  await expect.poll(() => fens.at(-1)).toBe('r2qkb1r/pp1nnpp1/2p1p2p/3pPb2/3P3P/2PB1N2/PP3PP1/RNBQK2R b - - 0 1');
+  await expect(page.locator('#pawnforge-hint')).not.toContainText('chosen manually');
+});

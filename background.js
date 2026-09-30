@@ -3,7 +3,7 @@ const requests = new Map();
 // Only forward settings the overlay offers; anything else falls back to the fast default.
 function engineSettings(settings) {
   const depth = [8, 12, 16, 20].includes(settings?.depth) ? settings.depth : 8;
-  return { depth, multiPv: 3 };
+  return { depth, multiPv: 5 };
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {

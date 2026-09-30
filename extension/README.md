@@ -25,8 +25,14 @@ The panel keeps an approximation warning visible with those results.
 Auto detect uses turn metadata, the selected move-list entry, the last-move highlight, or a running lichess clock, and falls back to the bottom move-list row: a complete white and black pair means White moves next, while a row containing only White's move means Black moves next.
 Live lichess games do not expose a FEN, so they use this approximate path.
 The overlay waits for a stable board snapshot and never overlaps engine requests while a previous analysis is running.
-The Side selector controls the side to move for approximate DOM analysis.
+The Side selector sets the side to move for approximate DOM analysis when Auto detect gets it wrong; it is the side to move, not your colour, so it applies to the current position only and returns to Auto detect after the next move.
+Evaluations are shown from White's point of view, like the lichess and chess.com eval bars.
+When a page has several boards or wraps its board in other elements, the overlay reads the innermost board with the most pieces, so a flipped lichess board (seen from Black) is read the right way up.
 A manual FEN takes precedence and supplies all six fields.
+The panel lists the five best engine moves, best first; select one to move the board highlights.
+The minimize button collapses the panel to a one-line bar that keeps analysing, highlights the suggested move on the board, and shows it with the last move's verdict.
+**Suggest weaker moves** selects the line with the largest loss between 0.4 and 1.5 pawns against the best move; if none qualifies it takes the closest weaker line under 1.5 pawns, and otherwise the best move.
+Both settings are remembered.
 The Depth selector sets the engine search depth (8, 12, 16 or 20); changing it starts a fresh blunder-detector history because evaluations from different depths are not comparable.
 
 The overlay can render red origin and destination pointers over any visible square-based or DOM-backed chessboard.

@@ -2,7 +2,7 @@ import js from '@eslint/js';
 import globals from 'globals';
 
 export default [
-  { ignores: ['engine/Stockfish/**', 'macos/.build/**', 'test-results/**', 'playwright-report/**'] },
+  { ignores: ['engine/Stockfish/**', 'macos/.build/**', 'test-results/**', 'playwright-report/**', 'vendor/**'] },
   js.configs.recommended,
   {
     files: ['**/*.js'],

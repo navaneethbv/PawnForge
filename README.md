@@ -7,7 +7,10 @@ PawnForge is a full-stack, anonymous chess analysis web app with a self-hosted S
 ### Position Analysis
 - Multi-PV Stockfish analysis with configurable depth (8-20)
 - Eval bar visualization showing white/black advantage
-- Top engine lines with evaluation scores
+- Top engine lines with evaluation scores, drawn as arrows on the board
+- Promotion picker for choosing a queen, rook, bishop, or knight
+- Copy or download the played game as PGN
+- The move history and selected move are restored after a page reload
 
 ### Evaluate Every Legal Move (Signature Feature)
 - Evaluates all legal moves in any position via streaming SSE
@@ -18,6 +21,7 @@ PawnForge is a full-stack, anonymous chess analysis web app with a self-hosted S
 
 ### PGN Game Review
 - Upload/paste PGN to analyze a complete game
+- Import one of a player's 10 most recent standard games from lichess or chess.com by username
 - Evaluation graph (canvas) with clickable navigation
 - Move-by-move annotations with quality classification
 - Navigate with arrow keys, buttons, or click the eval graph
@@ -25,7 +29,7 @@ PawnForge is a full-stack, anonymous chess analysis web app with a self-hosted S
 - Turning point detection (mistakes and blunders highlighted)
 
 ### Opening Discovery
-- Detects openings from the current move sequence
+- Detects openings from the current move sequence using about 3,800 named lines from the lichess opening dataset
 - ECO code identification
 - Book window range
 - Common continuations with clickable moves
@@ -195,9 +199,11 @@ Keyboard shortcuts: `←`/`→`/`Home`/`End` navigate, `F` flips the board, `Z` 
 The repository root also contains a Manifest V3 Chrome extension.
 Start PawnForge with `npm start`, open `chrome://extensions`, enable Developer mode, and load this repository directory as an unpacked extension.
 The Coach overlay runs on HTTP and HTTPS chess sites and prefers a complete page FEN.
+It reads the exact position from chess.com boards and from the lichess analysis board, so those need no approximation.
 It calls the local Stockfish API through the extension background worker and highlights the recommended origin and destination squares in red.
 DOM-only reconstruction requires opting into approximate analysis because visible pieces do not reveal castling rights, en passant, or draw counters.
-Auto detect uses the site's turn metadata when available and falls back to the bottom move-list row, so a completed white and black pair means White moves next while a row containing only White's move means Black moves next.
+Auto detect uses the site's turn metadata, the selected move-list entry, the last-move highlight, or a running lichess clock, and falls back to the bottom move-list row, so a completed white and black pair means White moves next while a row containing only White's move means Black moves next.
+The Depth selector trades speed for strength (8 to 20).
 Paste a complete six-field FEN for accurate analysis when the page does not expose one.
 The Side selector is available for approximate DOM analysis.
 Canvas-only boards need a page FEN or manual FEN.
@@ -220,7 +226,7 @@ Run it from the repository with `swift run --package-path macos -- --repo "$PWD"
 | `Stockfish is not available` | Build the engine (`cd engine/Stockfish/src && make build ARCH=x86-64`) or install it system-wide |
 | `Engine timeout` errors | Reduce analysis depth, retry after queued work completes, or check that the Stockfish binary runs correctly (`echo "quit" \| stockfish`) |
 | Port already in use | Set a different port: `PORT=3000 npm start` |
-| Board doesn't render | Ensure you have internet access (chessboard.js and chess.js load from CDN) |
+| Board doesn't render | Check the browser console; the frontend libraries are served from `vendor/` and need no internet access |
 
 ## Engine Configuration
 
@@ -256,17 +262,18 @@ swift build --package-path macos # macOS only
 ```
 
 Browser tests require an installed or built Stockfish binary and reserve port 4189.
-They serve pinned test copies of the frontend libraries so the tests do not depend on CDN availability.
-The application still loads those libraries from CDNs.
-Unit tests cover FEN validation, mate-score encoding, loss clamping, opening detection, and bounded concurrency in `chess-analysis.js`.
+The application serves its frontend libraries from `vendor/`, and the browser tests block every non-local request to prove it runs offline.
+A unit test fails if a file in `vendor/` differs from the version pinned in `package.json`; refresh it by copying the file from `node_modules/` after an update.
+Unit tests cover FEN validation, mate-score encoding, loss clamping, opening detection, and bounded concurrency in `chess-analysis.js`, plus the lichess and chess.com game import.
 Worker tests use a controlled UCI process to exercise crashes, continuous-output timeouts, cancellation, and overload.
-Browser tests cover FEN loading, illegal drags, history, stale sparring/review responses, custom-position summaries, API access restrictions, and real-engine analysis/explorer results.
+Browser tests cover FEN loading, illegal drags, promotion, history and its restore after reload, PGN export, game import, stale sparring/review responses, custom-position summaries, API access restrictions, and real-engine analysis/explorer results.
 GitHub Actions runs JavaScript lint and syntax checks, Manifest V3 asset validation, workflow validation, Node 22/24 tests, real-engine browser and extension tests, dependency auditing/review, and a Swift build with warnings treated as errors.
 The required `PR checks` job fails when any applicable CI job fails, is cancelled, or is skipped.
 The CodeQL workflow separately analyzes JavaScript, Swift, Actions, and bundled C++ code.
 Swift analysis explicitly builds the macOS package instead of relying on repository-wide autobuild detection.
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the enforced branch policy and check details.
 Native menu interaction and third-party chess-site compatibility remain manual checks.
+Game import calls the public lichess and chess.com APIs from the browser; lichess rate limits unauthenticated clients, and the app asks you to wait a minute when that happens.
 
 ## Position and review behavior
 
@@ -279,7 +286,7 @@ Resetting, loading a FEN, changing sides, or disabling sparring invalidates pend
 
 ## Tech Stack
 
-- **Frontend**: Vanilla JS (ES modules), chess.js, chessboardjs, Canvas API
+- **Frontend**: Vanilla JS (ES modules), chess.js, chessboardjs, Canvas API (libraries served locally from `vendor/`)
 - **Backend**: Node.js (zero npm dependencies, built-in modules only)
 - **Engine**: Stockfish 19 (compiled from source)
 - **Protocol**: UCI over stdin/stdout, SSE for streaming
@@ -291,6 +298,11 @@ Resetting, loading a FEN, changing sides, or disabling sparring invalidates pend
 The PawnForge application source code in this repository (excluding the bundled Stockfish engine under `engine/Stockfish`) is licensed under the **Apache License, Version 2.0**.
 
 See the top-level `LICENSE` file for the full text of the Apache-2.0 license.
+
+### Bundled frontend libraries and data
+
+`vendor/` contains unmodified copies of chess.js (BSD-2-Clause), chessboard.js (MIT), and jQuery (MIT); their license texts are in `vendor/licenses/`.
+`data/openings.tsv` combines the [lichess chess-openings](https://github.com/lichess-org/chess-openings) dataset, released under CC0.
 
 ### Stockfish engine
 

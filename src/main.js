@@ -1,4 +1,5 @@
-import { Chess } from 'https://cdn.jsdelivr.net/npm/chess.js@1.1.0/+esm';
+import { Chess } from '/vendor/chess.js';
+import { ImportError, fetchRecentGames } from '/src/game-import.js';
 
 const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
 // Mirrors chess-analysis.js: mate in N is encoded as ±(MATE_SCORE - N).
@@ -46,6 +47,11 @@ const el = {
   fenInput: $('fenInput'),
   fenError: $('fenError'),
   pgnInput: $('pgnInput'),
+  importSite: $('importSite'),
+  importUsername: $('importUsername'),
+  importGamesBtn: $('importGamesBtn'),
+  importStatus: $('importStatus'),
+  importResults: $('importResults'),
   moveList: $('moveList'),
   status: $('engineStatus'),
   topMovesContainer: $('topMovesContainer'),
@@ -93,6 +99,9 @@ const el = {
   sparringLevel: $('sparringLevel'),
   soundToggleBtn: $('soundToggleBtn'),
   copyFenBtn: $('copyFenBtn'),
+  copyPgnBtn: $('copyPgnBtn'),
+  downloadPgnBtn: $('downloadPgnBtn'),
+  promotionPicker: $('promotionPicker'),
   moveNavStart: $('moveNavStart'),
   moveNavPrev: $('moveNavPrev'),
   moveNavNext: $('moveNavNext'),
@@ -224,6 +233,7 @@ function jumpToHistoryPly(ply) {
   const last = line.at(-1);
   if (last) highlightLastMove(last.from, last.to, null);
   updateCoachHint();
+  saveSession();
 }
 
 // Apply bookkeeping after `move` has been played on `game`.
@@ -320,7 +330,9 @@ function clearPositionAnalysis() {
   coachCandidates = [];
   el.coachCandidates.replaceChildren();
   el.applyCoachMoveBtn.hidden = true;
+  analysisArrowMoves = [];
   clearMoveArrow();
+  closePromotionPicker();
   invalidateSparring();
   positionAnalysisRequestId += 1;
   el.topMovesContainer.replaceChildren(placeholder('Run an analysis to see the engine’s best lines for this position.'));
@@ -358,6 +370,7 @@ function setBoardFlipped(flipped) {
   if (allMovesResult.length > 0) renderBoardBadges(allMovesResult, allMovesResultFen);
   if (lastHighlight) highlightLastMove(lastHighlight.from, lastHighlight.to, lastHighlight.category);
   if (coachEnabled && coachCandidates.length > 0) renderCoachCandidate(activeCandidateIdx);
+  else if (analysisArrowMoves.length > 0) renderAnalysisArrows();
 }
 
 // ── On-board eval badges (best move per destination square) ──
@@ -447,6 +460,17 @@ function renderMoveArrow(from, to, rank = 1) {
 
 function clearMoveArrow() {
   el.boardArrowOverlay.querySelectorAll('path, circle').forEach((p) => p.remove());
+}
+
+// Top engine moves from "Analyze position", drawn when the coach is not already showing its own.
+let analysisArrowMoves = [];
+
+function renderAnalysisArrows() {
+  if (coachEnabled) return;
+  clearMoveArrow();
+  // Lower-ranked arrows first so the best move is drawn on top.
+  analysisArrowMoves.slice(0, 3).map((move, i) => [move, i + 1]).reverse()
+    .forEach(([move, rank]) => renderMoveArrow(move.uci.slice(0, 2), move.uci.slice(2, 4), rank));
 }
 
 // ── Coach State & Multi-PV Analysis ──
@@ -690,6 +714,7 @@ function renderMoves() {
   el.moveList.replaceChildren(...rows);
   updateActiveMoveHighlight();
   setFenInput(game.fen());
+  saveSession();
 }
 
 // ── Board event handlers ──
@@ -703,8 +728,13 @@ function onDragStart(_source, piece) {
 function onDrop(source, target) {
   if (sparringActive && (isEngineThinking || game.turn() !== sparringPlayerColor)) return 'snapback';
 
+  if (game.moves({ square: source, verbose: true }).some((m) => m.to === target && m.promotion)) {
+    openPromotionPicker(source, target);
+    return 'snapback';
+  }
+
   let move;
-  try { move = game.move({ from: source, to: target, promotion: 'q' }); }
+  try { move = game.move({ from: source, to: target }); }
   catch { return 'snapback'; }
   if (!move) return 'snapback';
 
@@ -714,6 +744,179 @@ function onDrop(source, target) {
 
 function onSnapEnd() {
   board.position(game.fen());
+}
+
+// ── Promotion picker ──
+let pendingPromotion = null;
+
+function openPromotionPicker(from, to) {
+  const color = game.turn();
+  pendingPromotion = { from, to, fen: game.fen() };
+  el.promotionPicker.querySelectorAll('.promotion-choice').forEach((button) => {
+    button.querySelector('img').src = PIECE_THEME.get(`${color}${button.dataset.piece.toUpperCase()}`);
+  });
+  el.promotionPicker.hidden = false;
+  el.promotionPicker.querySelector('.promotion-choice').focus();
+}
+
+function closePromotionPicker() {
+  if (!pendingPromotion) return;
+  pendingPromotion = null;
+  el.promotionPicker.hidden = true;
+}
+
+function choosePromotion(piece) {
+  const pending = pendingPromotion;
+  closePromotionPicker();
+  // Navigation or a reset while the picker was open makes the pending move stale.
+  if (!pending || pending.fen !== game.fen()) return;
+  let move = null;
+  try { move = game.move({ from: pending.from, to: pending.to, promotion: piece }); } catch (_e) {}
+  if (move) commitMove(move);
+}
+
+function bindPromotionPicker() {
+  el.promotionPicker.addEventListener('click', (event) => {
+    const choice = event.target.closest('.promotion-choice');
+    if (choice) choosePromotion(choice.dataset.piece);
+  });
+  el.promotionPicker.addEventListener('keydown', (event) => {
+    // Keep board shortcuts (arrows, Z, F, Space) from acting while choosing a piece.
+    event.stopPropagation();
+    const choices = [...el.promotionPicker.querySelectorAll('.promotion-choice')];
+    const index = choices.indexOf(document.activeElement);
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closePromotionPicker();
+    } else if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') {
+      event.preventDefault();
+      const step = event.key === 'ArrowRight' ? 1 : -1;
+      choices.at((index + step) % choices.length).focus();
+    }
+  });
+  document.addEventListener('pointerdown', (event) => {
+    if (pendingPromotion && !el.promotionPicker.contains(event.target)) closePromotionPicker();
+  });
+}
+
+// ── PGN export ──
+function pgnResult(position) {
+  if (position.isCheckmate()) return position.turn() === 'w' ? '0-1' : '1-0';
+  if (position.isDraw()) return '1/2-1/2';
+  return '*';
+}
+
+function currentPgn() {
+  const replay = new Chess();
+  replay.setHeader('Event', 'PawnForge analysis');
+  replay.setHeader('Site', 'PawnForge');
+  replay.setHeader('Date', new Date().toISOString().slice(0, 10).replaceAll('-', '.'));
+  // chess.js adds SetUp and FEN headers when the game starts from a custom position.
+  replay.load(initialFen, { preserveHeaders: true });
+  playedMoves.forEach((move) => replay.move(move));
+  replay.setHeader('Result', pgnResult(replay));
+  return replay.pgn();
+}
+
+function flashCopied(button, label) {
+  const use = button.querySelector('use');
+  use.setAttribute('href', '#i-check');
+  button.title = 'Copied';
+  setTimeout(() => {
+    use.setAttribute('href', '#i-copy');
+    button.title = label;
+  }, 1200);
+}
+
+function downloadPgn() {
+  const url = URL.createObjectURL(new Blob([`${currentPgn()}\n`], { type: 'application/x-chess-pgn' }));
+  const link = h('a', { href: url, download: `pawnforge-${new Date().toISOString().slice(0, 10)}.pgn` });
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+// ── Import recent games ──
+let importController = null;
+
+function loadImportedGame(game) {
+  el.pgnInput.value = game.pgn;
+  el.importStatus.textContent = `Loaded ${game.white} vs ${game.black}. Press Review game to analyse it.`;
+  $('analyzeGameBtn').focus();
+}
+
+async function importGames() {
+  importController?.abort();
+  const controller = new AbortController();
+  importController = controller;
+  el.importResults.hidden = true;
+  el.importResults.replaceChildren();
+  el.importStatus.textContent = 'Fetching recent games…';
+  el.importGamesBtn.disabled = true;
+  try {
+    const games = await fetchRecentGames(el.importSite.value, el.importUsername.value, { signal: controller.signal });
+    if (controller !== importController) return;
+    if (games.length === 0) {
+      el.importStatus.textContent = 'No standard chess games found for that player.';
+      return;
+    }
+    el.importStatus.textContent = `${games.length} recent games. Choose one to load its PGN.`;
+    el.importResults.replaceChildren(...games.map((game) => h('button', {
+      type: 'button',
+      class: 'import-game',
+      onclick: () => loadImportedGame(game)
+    },
+    h('span', { class: 'import-players' }, `${game.white} vs ${game.black}`),
+    h('span', { class: 'import-meta' }, `${game.result} · ${game.date}`))));
+    el.importResults.hidden = false;
+  } catch (error) {
+    if (controller !== importController || error.name === 'AbortError') return;
+    el.importStatus.textContent = error instanceof ImportError ? error.message : 'Could not reach the site. Check your connection and try again.';
+  } finally {
+    if (controller === importController) {
+      importController = null;
+      el.importGamesBtn.disabled = false;
+    }
+  }
+}
+
+// ── Session persistence ──
+// The board history survives a reload; only moves are stored and they are replayed on load.
+const SESSION_KEY = 'pawnforge_session';
+const MAX_SAVED_PLIES = 1000;
+
+function saveSession() {
+  try {
+    localStorage.setItem(SESSION_KEY, JSON.stringify({
+      initialFen,
+      moves: playedMoves.map(({ from, to, promotion }) => ({ from, to, promotion })),
+      ply: currentMoveIndex
+    }));
+  } catch (_e) {}
+}
+
+function restoreSession() {
+  let saved;
+  try { saved = JSON.parse(localStorage.getItem(SESSION_KEY) || 'null'); } catch (_e) { return; }
+  if (!saved || typeof saved.initialFen !== 'string' || !Array.isArray(saved.moves) || saved.moves.length > MAX_SAVED_PLIES) return;
+  try {
+    const replay = new Chess(saved.initialFen);
+    const start = replay.fen();
+    const moves = saved.moves.map(({ from, to, promotion }) => {
+      const move = replay.move({ from, to, promotion });
+      return { from: move.from, to: move.to, promotion: move.promotion, san: move.san };
+    });
+    const ply = Number.isInteger(saved.ply) ? Math.max(-1, Math.min(moves.length - 1, saved.ply)) : moves.length - 1;
+    const position = new Chess(start);
+    moves.slice(0, ply + 1).forEach((move) => position.move(move));
+    initialFen = start;
+    playedMoves = moves;
+    currentMoveIndex = ply;
+    game = position;
+  } catch (_e) {
+    // An unreadable or illegal saved game starts a fresh board instead.
+  }
 }
 
 // ── API helpers ──
@@ -770,6 +973,8 @@ async function analyzePosition() {
     }
 
     updateEvalBar(toWhiteRelativeEval(data.bestEvalCp, fen));
+    analysisArrowMoves = data.topMoves;
+    renderAnalysisArrows();
     el.topMovesContainer.replaceChildren(h('div', { class: 'top-moves-summary' },
       data.topMoves.map((m) => h('span', { class: 'top-move-chip' },
         sanForUci(fen, m.uci), evalPill(toWhiteRelativeEval(m.evalCp, fen))))));
@@ -1486,14 +1691,18 @@ function bindUI() {
 
   el.copyFenBtn.addEventListener('click', () => {
     navigator.clipboard?.writeText(game.fen()).catch(() => {});
-    const use = el.copyFenBtn.querySelector('use');
-    use.setAttribute('href', '#i-check');
-    el.copyFenBtn.title = 'Copied';
-    setTimeout(() => {
-      use.setAttribute('href', '#i-copy');
-      el.copyFenBtn.title = 'Copy FEN';
-    }, 1200);
+    flashCopied(el.copyFenBtn, 'Copy FEN');
   });
+  el.copyPgnBtn.addEventListener('click', () => {
+    navigator.clipboard?.writeText(currentPgn()).catch(() => {});
+    flashCopied(el.copyPgnBtn, 'Copy PGN');
+  });
+  el.downloadPgnBtn.addEventListener('click', downloadPgn);
+  el.importGamesBtn.addEventListener('click', importGames);
+  el.importUsername.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') importGames();
+  });
+  bindPromotionPicker();
 
   $('analyzePositionBtn').addEventListener('click', analyzePosition);
   $('analyzeAllMovesBtn').addEventListener('click', runAllMoves);
@@ -1595,9 +1804,10 @@ try {
 } catch (_e) {}
 setSoundEnabled(soundEnabled);
 
+restoreSession();
 board = window.Chessboard('board', {
   draggable: true,
-  position: 'start',
+  position: game.fen(),
   pieceTheme: (piece) => PIECE_THEME.get(piece),
   onDragStart,
   onDrop,
@@ -1608,5 +1818,7 @@ initTabs();
 bindUI();
 syncOverlaySize();
 renderMoves();
+const restoredLastMove = playedMoves.at(currentMoveIndex);
+if (currentMoveIndex >= 0 && restoredLastMove) highlightLastMove(restoredLastMove.from, restoredLastMove.to, null);
 updateEvalBar(0);
 updateCoachHint();

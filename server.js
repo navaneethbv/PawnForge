@@ -440,7 +440,13 @@ const publicFiles = new Map([
   ['/index.html', join(ROOT, 'index.html')],
   ['/overlay.js', join(ROOT, 'overlay.js')],
   ['/src/main.js', join(ROOT, 'src', 'main.js')],
-  ['/src/styles.css', join(ROOT, 'src', 'styles.css')]
+  ['/src/styles.css', join(ROOT, 'src', 'styles.css')],
+  ['/src/game-import.js', join(ROOT, 'src', 'game-import.js')],
+  // Pinned frontend libraries, served locally so the app works offline.
+  ['/vendor/chess.js', join(ROOT, 'vendor', 'chess.js')],
+  ['/vendor/jquery.min.js', join(ROOT, 'vendor', 'jquery.min.js')],
+  ['/vendor/chessboard-1.0.0.min.js', join(ROOT, 'vendor', 'chessboard-1.0.0.min.js')],
+  ['/vendor/chessboard-1.0.0.min.css', join(ROOT, 'vendor', 'chessboard-1.0.0.min.css')]
 ]);
 
 // ── Static File Server ──

@@ -1,6 +1,32 @@
 import { test, expect, chromium } from '@playwright/test';
 import { resolve } from 'node:path';
 
+test('unpacked extension reads the exact position from a chess.com board element', async () => {
+  const extension = resolve('.');
+  const context = await chromium.launchPersistentContext('', {
+    channel: 'chromium', headless: true,
+    args: [`--disable-extensions-except=${extension}`, `--load-extension=${extension}`]
+  });
+  // Black to move with castling rights: only the page object reveals these, not the visible pieces.
+  const fen = 'r1bqk2r/pppp1ppp/2n2n2/2b1p3/2B1P3/3P1N2/PPP2PPP/RNBQK2R b KQkq - 0 4';
+  try {
+    const page = await context.newPage();
+    // Mirrors chess.com: the board custom element exposes its game only to page scripts.
+    await page.route('https://chess.example.test/**', route => route.fulfill({ contentType: 'text/html', body: `<!doctype html><html><body>
+      <wc-chess-board style="display:block;width:400px;height:400px"></wc-chess-board>
+      <script>customElements.define('wc-chess-board', class extends HTMLElement {
+        constructor() { super(); this.game = { getFEN: () => ${JSON.stringify(fen)} }; }
+      });</script></body></html>` }));
+    await page.goto('https://chess.example.test/');
+    await expect(page.locator('#pawnforge-hud')).toBeVisible();
+    await page.locator('#pawnforge-endpoint').fill('http://127.0.0.1:4189/api/analyze/position');
+    await page.locator('#pawnforge-save-endpoint').click();
+    await expect(page.locator('#pawnforge-hud-candidates button').first()).toBeVisible({ timeout: 25000 });
+    await expect(page.locator('#pawnforge-hint')).toContainText('Source: page FEN');
+    await expect(page.locator('#pawnforge-hud-msg')).toContainText('Black should move');
+  } finally { await context.close(); }
+});
+
 test('unpacked extension relays foreign-page FEN analysis to the local API', async () => {
   const extension = resolve('.');
   const context = await chromium.launchPersistentContext('', {

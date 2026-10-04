@@ -443,6 +443,7 @@ const publicFiles = new Map([
   ['/src/main.js', join(ROOT, 'src', 'main.js')],
   ['/src/styles.css', join(ROOT, 'src', 'styles.css')],
   ['/src/game-import.js', join(ROOT, 'src', 'game-import.js')],
+  ['/src/chess-position.js', join(ROOT, 'src', 'chess-position.js')],
   // Pinned frontend libraries, served locally so the app works offline.
   ['/vendor/chess.js', join(ROOT, 'vendor', 'chess.js')],
   ['/vendor/jquery.min.js', join(ROOT, 'vendor', 'jquery.min.js')],

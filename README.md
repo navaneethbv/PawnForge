@@ -198,7 +198,9 @@ Keyboard shortcuts: `←`/`→`/`Home`/`End` navigate, `F` flips the board, `Z` 
 
 The repository root also contains a Manifest V3 Chrome extension.
 Start PawnForge with `npm start`, open `chrome://extensions`, enable Developer mode, and load this repository directory as an unpacked extension.
-The Coach overlay runs on HTTP and HTTPS chess sites and prefers a complete page FEN.
+The Coach overlay loads only on Chess.com, Lichess, ChessTempo, and chess.org (including their subdomains), and prefers a complete page FEN.
+It does not request access to unrelated websites.
+ChessTempo and chess.org use generic board detection or manual FEN input; site-specific automatic detection is covered for Chess.com and Lichess.
 It reads the exact position from chess.com boards and from the lichess analysis board, so those need no approximation.
 It calls the local Stockfish API through the extension background worker and highlights the recommended origin and destination squares in red.
 DOM-only reconstruction requires opting into approximate analysis because visible pieces do not reveal castling rights, en passant, or draw counters.
@@ -281,6 +283,11 @@ Game import calls the public lichess and chess.com APIs from the browser; liches
 ## Position and review behavior
 
 Loading a FEN updates the board only after validation succeeds.
+The app and API reject unsafe positions, including back-rank pawns, a king left in check by the previous move, and inconsistent castling or en passant state.
+Incomplete Move Explorer streams report an error and allow a retry.
+Copy feedback confirms clipboard success and reports permission failures.
+Superseded position, coach, and overlay searches are cancelled to free engine capacity.
+During sparring, returning to the latest history position resumes the computer turn.
 History navigation replays moves to retain opening and repetition history in the frontend.
 FEN-only engine analysis cannot recover repetition history from earlier positions.
 Game review preserves the PGN starting position, side to move, and move numbers.
@@ -290,7 +297,7 @@ Resetting, loading a FEN, changing sides, or disabling sparring invalidates pend
 ## Tech Stack
 
 - **Frontend**: Vanilla JS (ES modules), chess.js, chessboardjs, Canvas API (libraries served locally from `vendor/`)
-- **Backend**: Node.js (zero npm dependencies, built-in modules only)
+- **Backend**: Node.js (built-in modules and bundled chess.js; no npm runtime install required)
 - **Engine**: Stockfish 19 (compiled from source)
 - **Protocol**: UCI over stdin/stdout, SSE for streaming
 

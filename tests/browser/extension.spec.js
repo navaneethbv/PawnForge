@@ -12,18 +12,20 @@ test('unpacked extension reads the exact position from a chess.com board element
   try {
     const page = await context.newPage();
     // Mirrors chess.com: the board custom element exposes its game only to page scripts.
-    await page.route('https://chess.example.test/**', route => route.fulfill({ contentType: 'text/html', body: `<!doctype html><html><body>
-      <wc-chess-board style="display:block;width:400px;height:400px"></wc-chess-board>
+    await page.route('https://www.chess.com/**', route => route.fulfill({ contentType: 'text/html', body: `<!doctype html><html><body>
+      <wc-chess-board style="display:block;width:180px;height:180px"></wc-chess-board>
+      <wc-chess-board id="main-board" style="position:absolute;left:220px;top:0;display:block;width:400px;height:400px"></wc-chess-board>
       <script>customElements.define('wc-chess-board', class extends HTMLElement {
-        constructor() { super(); this.game = { getFEN: () => ${JSON.stringify(fen)} }; }
+        constructor() { super(); this.game = { getFEN: () => this.id === 'main-board' ? ${JSON.stringify(fen)} : 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1' }; }
       });</script></body></html>` }));
-    await page.goto('https://chess.example.test/');
+    await page.goto('https://www.chess.com/');
     await expect(page.locator('#pawnforge-hud')).toBeVisible();
     await page.locator('#pawnforge-endpoint').fill('http://127.0.0.1:4189/api/analyze/position');
     await page.locator('#pawnforge-save-endpoint').click();
     await expect(page.locator('#pawnforge-hud-candidates button').first()).toBeVisible({ timeout: 25000 });
     await expect(page.locator('#pawnforge-hint')).toContainText('Source: page FEN');
     await expect(page.locator('#pawnforge-hud-msg')).toContainText('Black should move');
+    expect((await page.locator('[data-pawnforge-pointer="origin"]').boundingBox()).x).toBeGreaterThanOrEqual(220);
   } finally { await context.close(); }
 });
 
@@ -35,15 +37,15 @@ test('unpacked extension relays foreign-page FEN analysis to the local API', asy
   });
   try {
     const page = await context.newPage();
-    await page.route('https://chess.example.test/**', route => route.fulfill({ contentType: 'text/html', body: `<!doctype html><html><body><h1>Analysis fixture</h1><input id="fenInput" value="rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"></body></html>` }));
-    await page.goto('https://chess.example.test/');
+    await page.route('https://www.chess.com/**', route => route.fulfill({ contentType: 'text/html', body: `<!doctype html><html><body><h1>Analysis fixture</h1><input id="fenInput" value="rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"></body></html>` }));
+    await page.goto('https://www.chess.com/');
     await expect(page.locator('#pawnforge-hud')).toBeVisible();
     await page.locator('#pawnforge-endpoint').fill('http://127.0.0.1:4189/api/analyze/position');
     await page.locator('#pawnforge-save-endpoint').click();
     await expect(page.locator('#pawnforge-hud-candidates button').first()).toBeVisible({ timeout: 25000 });
     const worker = context.serviceWorkers()[0];
     const rejected = await worker.evaluate(async () => {
-      const [tab] = await chrome.tabs.query({ url: 'https://chess.example.test/' });
+      const [tab] = await chrome.tabs.query({ url: 'https://www.chess.com/' });
       const [{ result }] = await chrome.scripting.executeScript({
         target: { tabId: tab.id },
         func: async () => {
@@ -57,5 +59,31 @@ test('unpacked extension relays foreign-page FEN analysis to the local API', asy
     await page.locator('#pawnforge-endpoint').fill('https://example.org/api/analyze/position');
     await page.locator('#pawnforge-save-endpoint').click();
     await expect(page.locator('#pawnforge-hud-msg')).toContainText('Use http://127.0.0.1:PORT');
+  } finally { await context.close(); }
+});
+
+test('automatic injection is limited to the supported chess domains', async () => {
+  const extension = resolve('.');
+  const context = await chromium.launchPersistentContext('', {
+    channel: 'chromium', headless: true,
+    args: [`--disable-extensions-except=${extension}`, `--load-extension=${extension}`]
+  });
+  try {
+    const page = await context.newPage();
+    await page.route('**/*', route => route.fulfill({ contentType: 'text/html', body: '<!doctype html><body>No board</body>' }));
+    for (const domain of ['www.chess.com', 'lichess.org', 'www.chesstempo.com', 'chess.org']) {
+      await page.goto(`https://${domain}/`);
+      await expect(page.locator('#pawnforge-hud')).toBeVisible();
+    }
+    for (const domain of ['example.org', 'chess.com.example.org']) {
+      await page.goto(`https://${domain}/`);
+      await page.waitForTimeout(300);
+      await expect(page.locator('#pawnforge-hud')).toHaveCount(0);
+    }
+    const worker = context.serviceWorkers()[0];
+    const permissions = await worker.evaluate(() => chrome.permissions.getAll());
+    expect(permissions.origins).not.toContain('<all_urls>');
+    expect(permissions.origins).not.toContain('http://*/*');
+    expect(permissions.origins).not.toContain('https://*/*');
   } finally { await context.close(); }
 });

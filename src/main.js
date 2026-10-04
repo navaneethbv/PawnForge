@@ -1,5 +1,6 @@
 import { Chess } from '../vendor/chess.js';
 import { ImportError, fetchRecentGames } from './game-import.js';
+import { createPosition } from './chess-position.js';
 
 const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
 // Mirrors chess-analysis.js: mate in N is encoded as ±(MATE_SCORE - N).
@@ -135,6 +136,8 @@ let boardFlipped = false;
 let lastHighlight = null; // { from, to, category }
 let currentEvalCp = 0;
 let positionAnalysisRequestId = 0;
+let positionAnalysisController = null;
+let coachController = null;
 let explorerRequestId = 0;
 let activeExplorerStream = null;
 
@@ -234,6 +237,7 @@ function jumpToHistoryPly(ply) {
   if (last) highlightLastMove(last.from, last.to, null);
   void updateCoachHint();
   saveSession();
+  if (currentMoveIndex === playedMoves.length - 1) void checkSparringTurn();
 }
 
 // Apply bookkeeping after `move` has been played on `game`.
@@ -325,6 +329,10 @@ function updateEvalBar(evalCp) {
 }
 
 function clearPositionAnalysis() {
+  positionAnalysisController?.abort();
+  positionAnalysisController = null;
+  coachController?.abort();
+  coachController = null;
   coachReqId += 1;
   currentCoachMove = null;
   coachCandidates = [];
@@ -503,6 +511,8 @@ function gameOverText() {
 
 async function updateCoachHint() {
   const thisReq = ++coachReqId;
+  coachController?.abort();
+  coachController = null;
   if (!coachEnabled) {
     clearMoveArrow();
     el.coachCard.hidden = true;
@@ -520,10 +530,11 @@ async function updateCoachHint() {
   }
 
   showCoachMessage('Thinking…', 'Stockfish is evaluating candidate moves…');
-
+  const controller = new AbortController();
+  coachController = controller;
   try {
     const fen = game.fen();
-    const data = await postJson('/api/analyze/position', { fen, settings: { depth: 10, multiPv: COACH_LINES } });
+    const data = await postJson('/api/analyze/position', { fen, settings: { depth: 10, multiPv: COACH_LINES } }, controller.signal);
     if (thisReq !== coachReqId || !coachEnabled || fen !== game.fen()) return;
 
     if (!data.topMoves || data.topMoves.length === 0) {
@@ -535,6 +546,8 @@ async function updateCoachHint() {
     renderCoachCandidate(0);
   } catch (err) {
     if (thisReq === coachReqId) showCoachMessage('Coach unavailable', err.message || 'Could not calculate a hint.');
+  } finally {
+    if (coachController === controller) coachController = null;
   }
 }
 
@@ -830,6 +843,19 @@ function flashCopied(button, label) {
   }, 1200);
 }
 
+async function copyPositionText(button, label, text) {
+  button.title = label;
+  button.querySelector('use').setAttribute('href', '#i-copy');
+  try {
+    if (!navigator.clipboard) throw new Error('Clipboard unavailable');
+    await navigator.clipboard.writeText(text);
+    flashCopied(button, label);
+    $('copyStatus').textContent = `${label.slice(5)} copied.`;
+  } catch (_error) {
+    $('copyStatus').textContent = 'Copy failed. Select the FEN to copy it manually, or download the PGN.';
+  }
+}
+
 function downloadPgn() {
   const url = URL.createObjectURL(new Blob([`${currentPgn()}\n`], { type: 'application/x-chess-pgn' }));
   const link = h('a', { href: url, download: `pawnforge-${new Date().toISOString().slice(0, 10)}.pgn` });
@@ -957,6 +983,9 @@ function evalPill(whiteEval, extraClass = '') {
 // ── Position Analysis ──
 async function analyzePosition() {
   const requestId = ++positionAnalysisRequestId;
+  positionAnalysisController?.abort();
+  const controller = new AbortController();
+  positionAnalysisController = controller;
   const fen = game.fen();
   const depth = Number($('depthSelect').value);
   const multiPv = Number($('multipvSelect').value);
@@ -964,7 +993,7 @@ async function analyzePosition() {
   el.topMovesContainer.replaceChildren(placeholder(`Analyzing to depth ${depth}…`));
   el.pvLines.replaceChildren();
   try {
-    const data = await postJson('/api/analyze/position', { fen, settings: { depth, multiPv } });
+    const data = await postJson('/api/analyze/position', { fen, settings: { depth, multiPv } }, controller.signal);
     if (requestId !== positionAnalysisRequestId || game.fen() !== fen) return;
 
     if (!data.topMoves || data.topMoves.length === 0) {
@@ -1003,6 +1032,8 @@ async function analyzePosition() {
     if (requestId !== positionAnalysisRequestId || game.fen() !== fen) return;
     el.topMovesContainer.replaceChildren(errorBox(error.message));
     setEngineStatus('Analysis failed', 'error');
+  } finally {
+    if (positionAnalysisController === controller) positionAnalysisController = null;
   }
 }
 
@@ -1033,7 +1064,10 @@ class EventSourcePolyfill {
         let buf = '';
         while (!this.closed) {
           const { done, value } = await reader.read();
-          if (done) break;
+          if (done) {
+            if (!this.closed) throw new Error('The move stream ended before analysis finished. Try Evaluate all moves again.');
+            break;
+          }
           buf += decoder.decode(value, { stream: true });
           const chunks = buf.split('\n\n');
           buf = chunks.pop() || '';
@@ -1640,7 +1674,7 @@ function loadFenFromInput() {
   const fen = el.fenInput.value.trim();
   if (!fen) return;
   try {
-    game.load(fen);
+    game = createPosition(fen);
   } catch (error) {
     el.fenInput.setAttribute('aria-invalid', 'true');
     el.fenError.textContent = error.message.replace(/^Invalid FEN: /, 'Invalid FEN — ');
@@ -1692,12 +1726,10 @@ function bindUI() {
   });
 
   el.copyFenBtn.addEventListener('click', () => {
-    navigator.clipboard?.writeText(game.fen()).catch(() => {});
-    flashCopied(el.copyFenBtn, 'Copy FEN');
+    void copyPositionText(el.copyFenBtn, 'Copy FEN', game.fen());
   });
   el.copyPgnBtn.addEventListener('click', () => {
-    navigator.clipboard?.writeText(currentPgn()).catch(() => {});
-    flashCopied(el.copyPgnBtn, 'Copy PGN');
+    void copyPositionText(el.copyPgnBtn, 'Copy PGN', currentPgn());
   });
   el.downloadPgnBtn.addEventListener('click', downloadPgn);
   el.importGamesBtn.addEventListener('click', importGames);

@@ -14,13 +14,16 @@
     "storage"
   ],
   "host_permissions": [
-    "<all_urls>",
-    "http://127.0.0.1:4173/*",
-    "http://localhost:4173/*"
+    "*://*.chess.com/*",
+    "*://*.lichess.org/*",
+    "*://*.chesstempo.com/*",
+    "*://*.chess.org/*",
+    "http://127.0.0.1/*",
+    "http://localhost/*"
   ],
   "content_scripts": [
     {
-      "matches": ["http://*/*", "https://*/*"],
+      "matches": ["*://*.chess.com/*", "*://*.lichess.org/*", "*://*.chesstempo.com/*", "*://*.chess.org/*"],
       "js": ["overlay.js"],
       "run_at": "document_idle"
     }

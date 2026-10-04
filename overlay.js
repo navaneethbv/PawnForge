@@ -59,7 +59,8 @@
   let observedPositionKey = '';
   let observedPositionAt = 0;
   let pageFenPromise = null;
-  let pendingForcedAnalysis = false;
+  let pendingAnalysis = null;
+  const instanceId = crypto.getRandomValues(new Uint32Array(4)).join('-');
   let pollTimer = 0;
   let pointerElements = [];
   // The last analysed position, kept so the next one can be judged as the move that followed it.
@@ -431,7 +432,8 @@
       element?.getAttribute?.('data-flipped') || '',
       classText(element)
     ]).join(' ');
-    const explicitlyFlipped = elements.some((element) => element?.getAttribute?.('data-flipped') === 'true');
+    const explicitlyFlipped = elements.some((element) => element?.getAttribute?.('data-flipped') === 'true'
+      || element?.getAttribute?.('data-orientation') === 'black');
     return explicitlyFlipped || /orientation[-_ ]?black|flipped|\bblack[-_ ]?bottom\b/.test(attributes) ? 'black' : 'white';
   }
 
@@ -441,6 +443,8 @@
 
   function findBoardModel() {
     const selectors = [
+      'wc-chess-board',
+      'chess-board',
       'cg-board',
       '.cg-board',
       '[data-board]',
@@ -466,10 +470,12 @@
     // A wrapper around a board holds the same pieces; keep the innermost element so the board's own
     // orientation markers (lichess: cg-wrap.orientation-black around cg-board) apply.
     const innermost = scored.filter((outer) => !scored.some((inner) => (
-      inner !== outer && outer.element.contains(inner.element) && inner.pieceCount >= outer.pieceCount
+      inner !== outer && outer.element.contains(inner.element) && inner.pieceCount > 0
     )));
-    // Several boards (lichess mini games beside the main one): the most pieces, then the largest board.
-    const selected = innermost.sort((a, b) => b.pieceCount - a.pieceCount || b.area - a.area)[0];
+    // Prefer the main board's size over piece count: an endgame must not lose to a mini game.
+    const selected = innermost.filter((candidate) => candidate.pieceCount > 0)
+      .sort((a, b) => b.area - a.area || b.pieceCount - a.pieceCount)[0]
+      || innermost.sort((a, b) => b.area - a.area)[0];
     return selected ? { ...selected, orientation: boardOrientation(selected.element) } : null;
   }
 
@@ -739,7 +745,9 @@
 
   function updatePointerPositions() {
     if (!pointerMove && !verdictMarker) return;
-    const board = findBoardModel();
+    const element = currentSnapshot?.board?.element;
+    if (!element?.isConnected) { removePointers(); return; }
+    const board = { element, rect: element.getBoundingClientRect(), orientation: boardOrientation(element) };
     const verdictRect = verdictMarker && squareRect(board, verdictMarker.dataset.square);
     if (verdictRect) placeOnSquare(verdictMarker, verdictRect);
     if (!pointerMove) return;
@@ -1041,19 +1049,18 @@
 
   async function analyzePosition(force = false, { optIn = false } = {}) {
     if (!active) return;
+    const snapshot = await detectCurrentPosition();
+    if (!active) return;
     if (analysisInFlight) {
-      if (force) {
+      if (force || snapshot?.fen !== lastPositionKey) {
         analysisRequest += 1;
         analysisController?.abort();
-        lastPositionKey = '';
-        // Re-run once the superseded request settles so a click is never silently dropped.
-        pendingForcedAnalysis = true;
+        // Keep explicit actions while a changed board or settings cancel the old search.
+        if (!pendingAnalysis?.force) pendingAnalysis = { force, optIn };
       }
       return;
     }
     const requestId = ++analysisRequest;
-    const snapshot = await detectCurrentPosition();
-    if (!active || requestId !== analysisRequest) return;
 
     if (!snapshot?.fen) {
       if (snapshot?.unstable) {
@@ -1130,7 +1137,13 @@
           shutdown();
           return;
         }
-        const result = await extensionRuntime.sendMessage({ type: 'analyze-position', endpoint, payload });
+        const relayId = `${instanceId}:${requestId}`;
+        analysisController.signal.addEventListener('abort', () => {
+          try {
+            extensionRuntime.sendMessage({ type: 'cancel-analysis', requestId: relayId }).catch(() => {});
+          } catch (_error) { /* An orphaned extension has no relay left to cancel. */ }
+        }, { once: true });
+        const result = await extensionRuntime.sendMessage({ type: 'analyze-position', requestId: relayId, endpoint, payload });
         if (result?.error) throw new Error(result.error);
         data = result.data;
       } else {
@@ -1177,9 +1190,10 @@
       setHint(error?.message || endpoint);
     } finally {
       analysisInFlight = false;
-      if (pendingForcedAnalysis && active) {
-        pendingForcedAnalysis = false;
-        void analyzePosition(true);
+      if (pendingAnalysis && active) {
+        const pending = pendingAnalysis;
+        pendingAnalysis = null;
+        void analyzePosition(pending.force, { optIn: pending.optIn });
       }
     }
   }
@@ -1271,6 +1285,7 @@
     active = next;
     switchEl.checked = active;
     if (!active) {
+      pendingAnalysis = null;
       analysisRequest += 1;
       if (analysisController) analysisController.abort();
       previousAnalysis = null;

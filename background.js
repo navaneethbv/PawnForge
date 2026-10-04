@@ -7,6 +7,11 @@ function engineSettings(settings) {
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type === 'cancel-analysis' && sender.tab?.id) {
+    const request = requests.get(sender.tab.id);
+    if (request && request.requestId === message.requestId) request.controller.abort();
+    return false;
+  }
   if (message?.type !== 'analyze-position' || !sender.tab?.id) return undefined;
   const tabId = sender.tab.id;
   let url;
@@ -15,9 +20,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (url.protocol !== 'http:' || url.username || url.password || url.pathname !== '/api/analyze/position' || url.search || url.hash) throw new Error('Only the local PawnForge analysis endpoint is allowed.');
   } catch (error) { sendResponse({ error: error.message }); return false; }
   if (['127.0.0.1', 'localhost'].includes(url.hostname)) {
-    requests.get(tabId)?.abort();
+    requests.get(tabId)?.controller.abort();
     const controller = new AbortController();
-    requests.set(tabId, controller);
+    const request = { controller, requestId: message.requestId };
+    requests.set(tabId, request);
     const timer = setTimeout(() => controller.abort(), 20000);
     const localEndpoint = new URL('http://127.0.0.1/api/analyze/position');
     localEndpoint.port = String(Number(url.port || 80));
@@ -31,21 +37,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse(response.ok ? { data } : { error: data.error || `HTTP ${response.status}` });
     }).catch((error) => sendResponse({ error: error.message })).finally(() => {
       clearTimeout(timer);
-      if (requests.get(tabId) === controller) requests.delete(tabId);
+      if (requests.get(tabId) === request) requests.delete(tabId);
     });
     return true;
   }
   sendResponse({ error: 'Only the local PawnForge analysis endpoint is allowed.' });
   return false;
 });
-chrome.tabs.onRemoved.addListener((tabId) => { requests.get(tabId)?.abort(); requests.delete(tabId); });
+chrome.tabs.onRemoved.addListener((tabId) => { requests.get(tabId)?.controller.abort(); requests.delete(tabId); });
 
 // Runs in the page's MAIN world, where site objects such as chess.com's board element are visible.
 // Injected functions are serialised, so helpers must live inside this function.
 function readFenFromPage() {
   const readChessComBoard = () => {
     try {
-      const board = document.querySelector('wc-chess-board, chess-board');
+      const boards = [...document.querySelectorAll('wc-chess-board, chess-board')];
+      const area = (element) => { const rect = element.getBoundingClientRect(); return rect.width * rect.height; };
+      const board = boards.toSorted((a, b) => area(b) - area(a))[0];
       return typeof board?.game?.getFEN === 'function' ? board.game.getFEN() : null;
     } catch (_error) {
       // The site's board object can throw mid-update; the other sources below still apply.
@@ -79,7 +87,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 chrome.action.onClicked.addListener(async (tab) => {
-  if (!tab.id || !/^https?:/.test(tab.url || '')) return;
+  if (!tab.id || !/^https?:\/\/([\w-]+\.)*(chess\.com|lichess\.org|chesstempo\.com|chess\.org)\//.test(tab.url || '')) return;
   try {
     await chrome.tabs.sendMessage(tab.id, { type: 'toggle-overlay' });
   } catch (_error) {

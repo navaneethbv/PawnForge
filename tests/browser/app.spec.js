@@ -461,3 +461,113 @@ test('recent games can be imported by username and loaded for review', async ({ 
   await expect(page.locator('#importStatus')).toContainText('rate limiting');
   await expect(page.locator('#importResults')).toBeHidden();
 });
+
+test('returning to the latest position resumes a cancelled sparring reply', async ({ page }) => {
+  await load(page);
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  let requests = 0;
+  await page.route('**/api/analyze/position', async route => {
+    requests += 1;
+    if (requests === 1) await gate;
+    await route.fulfill({ json: { topMoves: [{ uci: 'e7e5' }], bestEvalCp: 0 } }).catch(() => {});
+  });
+  await page.locator('.sparring-toggle-label').click();
+  await drag(page, 'e2', 'e4');
+  await expect.poll(() => requests).toBe(1);
+  await page.locator('#moveNavEnd').click();
+  await expect(page.locator('#fenInput')).toHaveValue(/4p3\/4P3.* w /);
+  expect(requests).toBe(2);
+  release();
+  await expect(page.locator('#moveList .move-san')).toHaveText(['e4', 'e5']);
+});
+
+test('an incomplete explorer stream reports an error and permits retry', async ({ page }) => {
+  await load(page);
+  await page.route('**/api/analyze/all-moves', route => route.fulfill({
+    contentType: 'text/event-stream', body: 'data: {"type":"partial","progress":0.05}\n\n'
+  }));
+  await page.locator('[data-tab="explorer"]').click();
+  await page.locator('#analyzeAllMovesBtn').click();
+  await expect(page.locator('#allMovesTable')).toContainText('stream ended before analysis finished');
+  await expect(page.locator('#explorerProgress')).toBeHidden();
+  await page.unroute('**/api/analyze/all-moves');
+  await page.locator('#analyzeAllMovesBtn').click();
+  await expect(page.locator('#engineStatus')).toContainText('Explorer complete', { timeout: 20000 });
+});
+
+test('copy feedback waits for clipboard success and exposes failures', async ({ page }) => {
+  await load(page);
+  await page.evaluate(() => {
+    window.copiedValues = [];
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: {
+      writeText: text => new Promise((resolve, reject) => { window.finishCopy = success => {
+        if (success) { window.copiedValues.push(text); resolve(); }
+        else reject(new Error('Denied'));
+      }; })
+    } });
+  });
+  for (const id of ['copyFenBtn', 'copyPgnBtn']) {
+    await page.locator(`#${id}`).click();
+    await expect(page.locator(`#${id}`)).not.toHaveAttribute('title', 'Copied');
+    await page.evaluate(() => window.finishCopy(false));
+    await expect(page.locator('#copyStatus')).toContainText('Copy failed');
+    await expect(page.locator(`#${id}`)).not.toHaveAttribute('title', 'Copied');
+    await page.locator(`#${id}`).click();
+    await page.evaluate(() => window.finishCopy(true));
+    await expect(page.locator(`#${id}`)).toHaveAttribute('title', 'Copied');
+  }
+  const values = await page.evaluate(() => window.copiedValues);
+  expect(values[0]).toBe(start);
+  expect(values[1]).toContain('[Event "PawnForge analysis"]');
+});
+
+test('invalid positions never replace the board and every engine endpoint rejects them', async ({ page, request }) => {
+  await load(page);
+  const fen = '4k3/8/8/8/8/8/4R3/4K3 w - - 0 1';
+  await page.locator('#fenInput').fill(fen);
+  await page.locator('#loadFenBtn').click();
+  await expect(page.locator('#fenError')).toContainText('cannot leave its king in check');
+  await expect(page.locator('#board img')).toHaveCount(32);
+  for (const endpoint of ['position', 'all-moves', 'game']) {
+    const response = await request.post(`/api/analyze/${endpoint}`, { data: { fen, fenSequence: [fen] } });
+    expect(response.status()).toBe(400);
+    expect((await response.json()).error).toContain('Invalid FEN');
+  }
+  await page.locator('#analyzePositionBtn').click();
+  await expect(page.locator('.pv-line').first()).toBeVisible();
+});
+
+test('superseded analysis and disabled coach requests are aborted', async ({ page }) => {
+  await page.addInitScript(() => {
+    const original = window.fetch;
+    window.abortedSearches = 0;
+    window.fetch = (url, options) => {
+      if (url === '/api/analyze/position') options?.signal?.addEventListener('abort', () => { window.abortedSearches += 1; });
+      return original(url, options);
+    };
+  });
+  await load(page);
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  let requests = 0;
+  await page.route('**/api/analyze/position', async route => {
+    requests += 1;
+    await gate;
+    await route.fulfill({ json: { topMoves: [{ uci: 'e2e4', evalCp: 20, pv: 'e2e4' }], bestEvalCp: 20 } }).catch(() => {});
+  });
+  await page.locator('#analyzePositionBtn').click();
+  await expect.poll(() => requests).toBe(1);
+  await page.locator('#analyzePositionBtn').click();
+  await expect.poll(() => requests).toBe(2);
+  await expect.poll(() => page.evaluate(() => window.abortedSearches)).toBe(1);
+  await page.locator('#resetBtn').click();
+  await expect.poll(() => page.evaluate(() => window.abortedSearches)).toBe(2);
+  await page.locator('.coach-toggle-label').click();
+  await expect.poll(() => requests).toBe(3);
+  await page.locator('.coach-toggle-label').click();
+  await expect.poll(() => page.evaluate(() => window.abortedSearches)).toBe(3);
+  release();
+  await expect(page.locator('#coachCard')).toBeHidden();
+  await expect(page.locator('.pv-line')).toHaveCount(0);
+});

@@ -422,3 +422,61 @@ test('a manual side applies to one position and returns to auto detect after a m
   await expect.poll(() => fens.at(-1)).toBe('r2qkb1r/pp1nnpp1/2p1p2p/3pPb2/3P3P/2PB1N2/PP3PP1/RNBQK2R b - - 0 1');
   await expect(page.locator('#pawnforge-hint')).not.toContainText('chosen manually');
 });
+
+test('a main endgame board wins over a fuller mini board and keeps its pointers', async ({ page }) => {
+  const fens = await routeAnalysis(page);
+  await chessComFixture(page);
+  await page.evaluate(() => {
+    const main = document.querySelector('.board');
+    main.dataset.turn = 'b';
+    const mini = main.cloneNode(true);
+    mini.id = 'mini-board';
+    mini.style.cssText = 'position:absolute;left:700px;top:0;width:180px;height:180px';
+    for (const piece of mini.querySelectorAll('.piece')) {
+      piece.style.left = `${parseFloat(piece.style.left) * 180 / 480}px`;
+      piece.style.top = `${parseFloat(piece.style.top) * 180 / 480}px`;
+      piece.style.width = '22.5px';
+      piece.style.height = '22.5px';
+    }
+    document.body.append(mini);
+    for (const piece of main.querySelectorAll('.piece')) {
+      if (!piece.classList.contains('wk') && !piece.classList.contains('bk') && !piece.classList.contains('square-87')) piece.remove();
+    }
+  });
+  await injectOverlay(page);
+  await page.locator('#pawnforge-approximate').check();
+  await expect(page.locator('#pawnforge-hud-candidates button').first()).toBeVisible();
+  expect(fens.at(-1)).toBe('4k3/7p/8/8/8/8/8/4K3 b - - 0 1');
+  const pointer = await page.locator('[data-pawnforge-pointer="origin"]').boundingBox();
+  expect(pointer.x).toBeLessThan(480);
+  await page.evaluate(() => { document.querySelector('#mini-board').style.width = '600px'; window.dispatchEvent(new Event('resize')); });
+  expect((await page.locator('[data-pawnforge-pointer="origin"]').boundingBox()).x).toBeLessThan(480);
+});
+
+test('a changed position cancels the overlay search and starts the new one', async ({ page }) => {
+  await chessComFixture(page);
+  let requests = 0;
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  await page.route('**/api/analyze/position', async route => {
+    requests += 1;
+    if (requests === 1) await gate;
+    await route.fulfill({ json: { topMoves: [{ uci: 'e2e4', evalCp: 20, pv: 'e2e4' }] } }).catch(() => {});
+  });
+  await page.evaluate(() => {
+    const original = window.fetch;
+    window.cancelledOverlay = 0;
+    window.fetch = (url, options) => {
+      options?.signal?.addEventListener('abort', () => { window.cancelledOverlay += 1; });
+      return original(url, options);
+    };
+  });
+  await injectOverlay(page);
+  await page.locator('#pawnforge-approximate').check();
+  await expect.poll(() => requests).toBe(1);
+  await page.locator('#pawnforge-fen').fill('rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1');
+  await expect.poll(() => page.evaluate(() => window.cancelledOverlay)).toBe(1);
+  await expect.poll(() => requests).toBe(2);
+  await expect(page.locator('#pawnforge-hud-msg')).toContainText('E2');
+  release();
+});

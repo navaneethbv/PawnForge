@@ -1,6 +1,7 @@
 // Pure chess helpers shared by the HTTP server and unit tests.
 
 import { readFileSync } from 'node:fs';
+import { createPosition } from './src/chess-position.js';
 
 export const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
 
@@ -14,8 +15,8 @@ export const MATE_THRESHOLD = MATE_SCORE - 1000;
 export const LOSS_CLAMP_CP = 1000;
 
 export class HttpError extends Error {
-  constructor(statusCode, message) {
-    super(message);
+  constructor(statusCode, message, options) {
+    super(message, options);
     this.statusCode = statusCode;
   }
 }
@@ -55,7 +56,10 @@ export function validateFen(value) {
   if (patterns.some((pattern, index) => !pattern.test(fields[index + 1])) || new Set(fields[2]).size !== fields[2].length) {
     throw new HttpError(400, 'Invalid FEN.');
   }
-  return fields.join(' ');
+  const fen = fields.join(' ');
+  try { createPosition(fen); }
+  catch (error) { throw new HttpError(400, error.message, { cause: error }); }
+  return fen;
 }
 
 // Convert a UCI `score cp|mate N` pair into side-to-move centipawns.

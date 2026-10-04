@@ -851,8 +851,9 @@ async function copyPositionText(button, label, text) {
     await navigator.clipboard.writeText(text);
     flashCopied(button, label);
     $('copyStatus').textContent = `${label.slice(5)} copied.`;
-  } catch (_error) {
-    // The browser's reason (permission, focus, insecure context) is not actionable; offer manual routes instead.
+  } catch (error) {
+    // The browser's reason (permission, focus, insecure context) is not actionable for users; keep it for debugging.
+    console.warn('Clipboard write failed:', error);
     $('copyStatus').textContent = 'Copy failed. Select the FEN to copy it manually, or download the PGN.';
   }
 }

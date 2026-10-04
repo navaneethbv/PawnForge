@@ -473,9 +473,9 @@
       inner !== outer && outer.element.contains(inner.element) && inner.pieceCount > 0
     )));
     // Prefer the main board's size over piece count: an endgame must not lose to a mini game.
-    const selected = innermost.filter((candidate) => candidate.pieceCount > 0)
-      .sort((a, b) => b.area - a.area || b.pieceCount - a.pieceCount)[0]
-      || innermost.sort((a, b) => b.area - a.area)[0];
+    const withPieces = innermost.filter((candidate) => candidate.pieceCount > 0);
+    const selected = (withPieces.length ? withPieces : innermost)
+      .toSorted((a, b) => b.area - a.area || b.pieceCount - a.pieceCount)[0];
     return selected ? { ...selected, orientation: boardOrientation(selected.element) } : null;
   }
 

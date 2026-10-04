@@ -53,7 +53,7 @@ function readFenFromPage() {
     try {
       const boards = [...document.querySelectorAll('wc-chess-board, chess-board')];
       const area = (element) => { const rect = element.getBoundingClientRect(); return rect.width * rect.height; };
-      const board = boards.sort((a, b) => area(b) - area(a))[0];
+      const board = boards.toSorted((a, b) => area(b) - area(a))[0];
       return typeof board?.game?.getFEN === 'function' ? board.game.getFEN() : null;
     } catch (_error) {
       // The site's board object can throw mid-update; the other sources below still apply.

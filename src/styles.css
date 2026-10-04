@@ -844,6 +844,10 @@ label.field-label { margin-bottom: 6px; }
   font-size: 13px;
 }
 
+.copy-status {
+  display: block;
+}
+
 .inline-controls {
   display: flex;
   flex-wrap: wrap;

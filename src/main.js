@@ -852,6 +852,7 @@ async function copyPositionText(button, label, text) {
     flashCopied(button, label);
     $('copyStatus').textContent = `${label.slice(5)} copied.`;
   } catch (_error) {
+    // The browser's reason (permission, focus, insecure context) is not actionable; offer manual routes instead.
     $('copyStatus').textContent = 'Copy failed. Select the FEN to copy it manually, or download the PGN.';
   }
 }
@@ -1051,36 +1052,44 @@ class EventSourcePolyfill {
       body: payload,
       signal: this.ctrl.signal
     })
-      .then(async (res) => {
-        const contentType = res.headers.get('content-type') || '';
-        if (!res.ok || !contentType.includes('text/event-stream')) {
-          let message = `Request failed (HTTP ${res.status})`;
-          try { message = (await res.json()).error || message; } catch (_e) {}
-          throw new Error(message);
-        }
-        if (!res.body) throw new Error('Response body not readable');
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buf = '';
-        while (!this.closed) {
-          const { done, value } = await reader.read();
-          if (done) {
-            if (!this.closed) throw new Error('The move stream ended before analysis finished. Try Evaluate all moves again.');
-            break;
-          }
-          buf += decoder.decode(value, { stream: true });
-          const chunks = buf.split('\n\n');
-          buf = chunks.pop() || '';
-          for (const chunk of chunks) {
-            const line = chunk.split('\n').find((l) => l.startsWith('data: '));
-            if (line && this.onmessage && !this.closed) this.onmessage({ data: line.slice(6) });
-          }
-        }
-      })
+      .then((res) => this.readStream(res))
       .catch((error) => {
         if (this.closed || error.name === 'AbortError') return;
         if (this.onerror) this.onerror(error);
       });
+  }
+
+  async readStream(res) {
+    const contentType = res.headers.get('content-type') || '';
+    if (!res.ok || !contentType.includes('text/event-stream')) {
+      let message = `Request failed (HTTP ${res.status})`;
+      try {
+        message = (await res.json()).error || message;
+      } catch (_e) {
+        // A non-JSON error body still leaves the HTTP status message above.
+      }
+      throw new Error(message);
+    }
+    if (!res.body) throw new Error('Response body not readable');
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+    while (!this.closed) {
+      const { done, value } = await reader.read();
+      if (done) {
+        if (!this.closed) throw new Error('The move stream ended before analysis finished. Try Evaluate all moves again.');
+        break;
+      }
+      buf += decoder.decode(value, { stream: true });
+      const chunks = buf.split('\n\n');
+      buf = chunks.pop() || '';
+      chunks.forEach((chunk) => this.dispatchChunk(chunk));
+    }
+  }
+
+  dispatchChunk(chunk) {
+    const line = chunk.split('\n').find((l) => l.startsWith('data: '));
+    if (line && this.onmessage && !this.closed) this.onmessage({ data: line.slice(6) });
   }
 
   close() {

@@ -71,7 +71,11 @@ export class EngineWorker {
     if (this.pending >= this.maxPending) return Promise.reject(Object.assign(new Error('Engine busy. Try again shortly.'), { statusCode: 429 }));
     this.pending += 1;
     const deadline = Date.now() + this.timeoutMs;
+    const cancelled = Promise.withResolvers();
+    const cancelQueued = () => cancelled.reject(signal.reason);
+    signal?.addEventListener('abort', cancelQueued, { once: true });
     const job = this.queue.then(async () => {
+      signal?.removeEventListener('abort', cancelQueued);
       signal?.throwIfAborted();
       if (Date.now() >= deadline) throw Object.assign(new Error('Engine queue timeout'), { statusCode: 503 });
       let timer;
@@ -93,8 +97,13 @@ export class EngineWorker {
         clearTimeout(timer);
         signal?.removeEventListener('abort', abort);
       }
-    }).finally(() => { this.pending -= 1; });
+    });
+    // Release a cancelled queue slot immediately, while keeping active jobs serialized.
+    const result = Promise.race([job, cancelled.promise]).finally(() => {
+      signal?.removeEventListener('abort', cancelQueued);
+      this.pending -= 1;
+    });
     this.queue = job.catch(() => {});
-    return job;
+    return result;
   }
 }

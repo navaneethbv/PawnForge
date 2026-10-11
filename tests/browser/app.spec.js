@@ -322,6 +322,56 @@ test('resetting during a PGN review dismisses its cancelled progress indicator',
   await expect(page.locator('#fenInput')).toHaveValue(start);
 });
 
+for (const action of ['reset', 'load FEN']) {
+  test(`${action} clears a completed review and its keyboard navigation`, async ({ page }) => {
+    await load(page);
+    await page.locator('[data-tab="game-review"]').click();
+    await page.locator('#gameDepthSelect').selectOption('8');
+    await page.locator('#pgnInput').fill('1. d4 d5 *');
+    await page.locator('#analyzeGameBtn').click();
+    await expect(page.locator('.game-move')).toHaveCount(2);
+    await page.locator('#navLast').click();
+    const expectedFen = action === 'reset' ? start : afterE4;
+    if (action === 'reset') await page.locator('#resetBtn').click();
+    else {
+      await page.locator('#fenInput').fill(expectedFen);
+      await page.locator('#loadFenBtn').click();
+    }
+    await expect(page.locator('#fenInput')).toHaveValue(expectedFen);
+    await page.keyboard.press('ArrowRight');
+    await expect(page.locator('#fenInput')).toHaveValue(expectedFen);
+    await expect(page.locator('#gameSummary')).toBeHidden();
+    await expect(page.locator('#evalGraphContainer')).toBeHidden();
+    await expect(page.locator('#gameMoveList')).toBeHidden();
+    await page.reload();
+    await expect(page.locator('#fenInput')).toHaveValue(expectedFen);
+    await expect(page.locator('#moveList .move-san')).toHaveCount(0);
+  });
+}
+
+test('the final reviewed position resumes sparring without playing over earlier review plies', async ({ page }) => {
+  await load(page);
+  const searchedPositions = [];
+  await page.route('**/api/analyze/position', route => {
+    searchedPositions.push(route.request().postDataJSON().fen);
+    return route.fulfill({ json: {
+      topMoves: [{ uci: 'b8c6', evalCp: 0, pv: 'b8c6' }], bestEvalCp: 0
+    } });
+  });
+  await page.locator('.sparring-toggle-label').click();
+  await page.locator('[data-tab="game-review"]').click();
+  await page.locator('#gameDepthSelect').selectOption('8');
+  await page.locator('#pgnInput').fill('1. e4 e5 2. Nf3 *');
+  await page.locator('#analyzeGameBtn').click();
+  await expect(page.locator('.game-move')).toHaveCount(3);
+  await page.locator('#navFirst').click();
+  await expect(page.locator('#fenInput')).toHaveValue(afterE4);
+  await page.locator('#navLast').click();
+  await expect(page.locator('#moveList .move-san')).toHaveText(['e4', 'e5', 'Nf3', 'Nc6']);
+  expect(searchedPositions).toHaveLength(1);
+  expect(searchedPositions[0]).not.toBe(afterE4);
+});
+
 test('opening continuations cannot play the engine turn during sparring', async ({ page }) => {
   await load(page);
   await page.locator('[data-tab="opening"]').click();

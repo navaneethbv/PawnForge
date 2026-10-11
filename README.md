@@ -240,6 +240,7 @@ Each worker allows at most eight outstanding jobs and has a 15-second deadline m
 Overload returns HTTP 429; expired queued jobs return HTTP 503.
 Crashed, timed-out, and cancelled workers are terminated and replaced on the next job.
 Disconnected clients cancel their queued or active work, and each API request has a two-minute deadline.
+Cancelling a queued search releases its capacity immediately without interrupting another client's active search.
 Streaming failures are sent as SSE error events.
 Shutdown terminates the engine children.
 An LRU cache holds up to 500 results for one hour.
@@ -288,11 +289,13 @@ Incomplete Move Explorer streams report an error and allow a retry.
 Copy feedback confirms clipboard success and reports permission failures.
 Superseded position, coach, and overlay searches are cancelled to free engine capacity.
 During sparring, returning to the latest history position resumes the computer turn.
+This also applies to the last position of a reviewed game; earlier review moves remain available for inspection.
 History navigation replays moves to retain opening and repetition history in the frontend.
 FEN-only engine analysis cannot recover repetition history from earlier positions.
 Game review preserves the PGN starting position, side to move, and move numbers.
 Starting a newer review cancels the previous request and keeps its response and position sequence together.
 Resetting, loading a FEN, changing sides, or disabling sparring invalidates pending computer moves.
+Resetting or loading a FEN also clears the previous game review and its navigation controls.
 
 ## Tech Stack
 

@@ -1377,19 +1377,27 @@ function drawEvalGraph(plies, activePly = -1) {
 }
 
 // ── Game analysis ──
-async function analyzeGame() {
-  const requestId = ++gameReviewRequestId;
+function clearGameReview() {
+  gameReviewRequestId += 1;
   gameReviewController?.abort();
-  gameReviewController = new AbortController();
+  gameReviewController = null;
   gameReviewData = null;
   gameReviewPly = -1;
   gameReviewFens = [];
   gameReviewPreFens = [];
   gameReviewHistory = [];
+  el.gameProgress.hidden = true;
   el.gameSummary.hidden = true;
   el.evalGraphContainer.hidden = true;
   el.gameMoveList.hidden = true;
   el.gameMoveList.replaceChildren();
+}
+
+async function analyzeGame() {
+  clearGameReview();
+  const requestId = gameReviewRequestId;
+  const controller = new AbortController();
+  gameReviewController = controller;
   try {
     let hist;
     let startFen;
@@ -1422,7 +1430,7 @@ async function analyzeGame() {
       fenSequence,
       preMoveSequence,
       settings: { depth: Number($('gameDepthSelect').value) }
-    }, gameReviewController.signal);
+    }, controller.signal);
     if (requestId !== gameReviewRequestId) return;
     gameReviewFens = fenSequence;
     gameReviewPreFens = preMoveSequence;
@@ -1442,6 +1450,8 @@ async function analyzeGame() {
     el.gameMoveList.hidden = false;
     el.gameMoveList.replaceChildren(errorBox(error.message));
     setEngineStatus('Game review failed', 'error');
+  } finally {
+    if (gameReviewController === controller) gameReviewController = null;
   }
 }
 
@@ -1499,6 +1509,7 @@ function navigateToGamePly(ply) {
 
   drawEvalGraph(gameReviewData.plies, ply);
   void updateCoachHint();
+  if (currentMoveIndex === playedMoves.length - 1) void checkSparringTurn();
 }
 
 function renderGameSummary(data, hist) {
@@ -1667,10 +1678,7 @@ function loadPosition(fen) {
   initialFen = fen;
   playedMoves = [];
   currentMoveIndex = -1;
-  gameReviewRequestId += 1;
-  gameReviewController?.abort();
-  gameReviewController = null;
-  el.gameProgress.hidden = true;
+  clearGameReview();
   board.position(game.fen());
   renderMoves();
   clearPositionAnalysis();

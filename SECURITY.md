@@ -1,21 +1,18 @@
 # Security Policy
 
-## Supported Versions
+## Reporting a vulnerability
 
-Use this section to tell people about which versions of your project are
-currently being supported with security updates.
+Use GitHub's [private vulnerability reporting form](https://github.com/navaneethbv/PawnForge/security/advisories/new) to report a suspected security issue.
+Private vulnerability reporting is enabled for this repository.
+Keep undisclosed vulnerabilities out of public issues and pull requests.
 
-| Version | Supported          |
-| ------- | ------------------ |
-| 5.1.x   | :white_check_mark: |
-| 5.0.x   | :x:                |
-| 4.0.x   | :white_check_mark: |
-| < 4.0   | :x:                |
+Include the affected commit or release, operating system, Node.js and browser versions, reproduction steps, and the observed impact.
+Remove credentials, personal data, and unrelated browsing information from logs or screenshots.
 
-## Reporting a Vulnerability
+## Scope
 
-Use this section to tell people how to report a vulnerability.
+PawnForge includes the local web server, chess analysis workflows, Chrome extension, and macOS launcher.
+The server is intended to run on loopback, and the extension is restricted to its documented chess-site and local API permissions.
+See the README for the current runtime and permission boundaries.
 
-Tell them where to go, how often they can expect to get an update on a
-reported vulnerability, what to expect if the vulnerability is accepted or
-declined, etc.
+For ordinary bugs and feature requests, use [GitHub issues](https://github.com/navaneethbv/PawnForge/issues).

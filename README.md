@@ -86,7 +86,7 @@ Node.js HTTP Server (server.js)
 
 ```bash
 # 1. Clone the repository
-git clone <repository-url>
+git clone https://github.com/navaneethbv/PawnForge.git
 cd PawnForge
 
 # 2. Build Stockfish (or use pre-built binary if present)

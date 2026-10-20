@@ -129,6 +129,7 @@ struct Stack {
     bool                        followPV;
     int                         cutoffCnt;
     int                         reduction;
+    int                         priorNMPFailHigh;
 };
 
 
@@ -212,14 +213,6 @@ struct SharedState {
 
 class Worker;
 
-// Null Object Pattern, implement a common interface for the SearchManagers.
-// A Null Object will be given to non-mainthread workers.
-class ISearchManager {
-   public:
-    virtual ~ISearchManager() {}
-    virtual void check_time(Search::Worker&) = 0;
-};
-
 struct InfoShort {
     int   depth;
     Score score;
@@ -274,7 +267,7 @@ struct Skill {
 
 // SearchManager manages the search from the main thread. It is responsible for
 // keeping track of the time, and storing data strictly related to the main thread.
-class SearchManager: public ISearchManager {
+class SearchManager {
    public:
     using UpdateShort    = std::function<void(const InfoShort&)>;
     using UpdateFull     = std::function<void(const InfoFull&)>;
@@ -294,7 +287,7 @@ class SearchManager: public ISearchManager {
     SearchManager(const UpdateContext& updateContext) :
         updates(updateContext) {}
 
-    void check_time(Search::Worker& worker) override;
+    void check_time(Search::Worker& worker);
 
     void output_pv(Search::Worker&           worker,
                    const ThreadPool&         threads,
@@ -315,24 +308,14 @@ class SearchManager: public ISearchManager {
     const UpdateContext& updates;
 };
 
-class NullSearchManager: public ISearchManager {
-   public:
-    void check_time(Search::Worker&) override {}
-};
-
 // Search::Worker is the class that does the actual search.
 // It is instantiated once per thread, and it is responsible for keeping track
 // of the search history, and storing data required for the search.
 class Worker {
    public:
-    Worker(SharedState&,
-           std::unique_ptr<ISearchManager>,
-           usize,
-           usize,
-           usize,
-           NumaReplicatedAccessToken);
+    Worker(
+      SharedState&, std::unique_ptr<SearchManager>, usize, usize, usize, NumaReplicatedAccessToken);
 
-    // Called at instantiation to initialize reductions tables.
     // Reset histories, usually before a new game.
     void clear();
 
@@ -359,8 +342,12 @@ class Worker {
     bool iterative_deepening();
 
     void do_move(Position& pos, const Move move, StateInfo& st, Stack* const ss);
-    void
-    do_move(Position& pos, const Move move, StateInfo& st, const bool givesCheck, Stack* const ss);
+    void do_move(Position&    pos,
+                 const Move   move,
+                 StateInfo&   st,
+                 const bool   givesCheck,
+                 const bool   capture,
+                 Stack* const ss);
     void do_null_move(Position& pos, StateInfo& st, Stack* const ss);
     void undo_move(Position& pos, const Move move);
     void undo_null_move(Position& pos);
@@ -374,12 +361,13 @@ class Worker {
     template<NodeType nodeType>
     Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta);
 
-    int reduction(bool i, Depth d, int mn, int delta) const;
+    int reduction(bool i, Depth d, int mn) const;
 
     // Pointer to the search manager, only allowed to be called by the main thread
     SearchManager* main_manager() const {
         assert(threadIdx == 0);
-        return static_cast<SearchManager*>(manager.get());
+        assert(manager.get() != nullptr);
+        return manager.get();
     }
 
     TimePoint elapsed() const;
@@ -398,18 +386,15 @@ class Worker {
     StateInfo rootState;
     RootMoves rootMoves;
     Depth     rootDepth;
-    Value     rootDelta;
+    bool      seekMate = false;
 
     PVMoves lastIterationIdxPV;
 
     usize                     threadIdx, numaThreadIdx, numaTotal;
     NumaReplicatedAccessToken numaAccessToken;
 
-    // Reductions lookup table initialized at startup
-    std::array<int, MAX_MOVES> reductions;  // [depth or moveNumber]
-
-    // The main thread has a SearchManager, the others have a NullSearchManager
-    std::unique_ptr<ISearchManager> manager;
+    // The main thread has a SearchManager, the others have a nullptr
+    std::unique_ptr<SearchManager> manager;
 
     Tablebases::Config tbConfig;
 

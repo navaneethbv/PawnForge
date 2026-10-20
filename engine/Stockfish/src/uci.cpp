@@ -496,8 +496,6 @@ u64 UCIEngine::perft(const Search::LimitsType& limits) {
 }
 
 void UCIEngine::position(std::istringstream& is) {
-    const std::string fullCommand = is.str();
-
     std::string token, fen;
 
     is >> token;
@@ -640,7 +638,7 @@ std::string UCIEngine::to_lower(std::string str) {
 Move UCIEngine::to_move(const Position& pos, std::string str) {
     str = to_lower(str);
 
-    for (const auto& m : MoveList<LEGAL>(pos))
+    for (const auto& m : MoveList<ALL>(pos))
         if (str == move(m, pos.is_chess960()))
             return m;
 

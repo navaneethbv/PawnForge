@@ -34,6 +34,14 @@ PawnForge is a full-stack, anonymous chess analysis web app with a self-hosted S
 - Book window range
 - Common continuations with clickable moves
 
+### Play vs Engine
+- Rated strength from 1320 to 2800 Elo (Stockfish `UCI_LimitStrength`), or full strength
+- **Throw the game** training mode: the engine loses on purpose, but believably, around a chosen move (~25, 30, 40, or 50)
+  - Holds the position level through roughly the first 35% of the game, so you get a real opening
+  - Then concedes a little each move (at most ~1.8 pawns per move), drifting to about −5.5 by eight moves before the target
+  - Collapses only in those last eight moves, which is about how long most opponents need to convert; it never hangs a piece in the opening
+  - If you fall behind its plan, it plays its best move until the schedule catches up, so the game is not over early
+
 ### Move Quality Classification
 | Category   | Delta (cp) | Color  |
 |------------|------------|--------|
@@ -69,6 +77,7 @@ Node.js HTTP Server (server.js)
 | `/api/analyze/position` | POST | Analyze position with MultiPV |
 | `/api/analyze/all-moves` | POST | Stream eval for every legal move (SSE) |
 | `/api/analyze/game` | POST | Full game review from PGN |
+| `/api/play/move` | POST | Engine reply for play mode (`mode`: `elo` with `elo`, `full`, or `lose` with `loseBy`/`moveNumber`) |
 | `/api/opening` | GET | Detect opening by move sequence (`moves`, optional `fen` for custom starts) |
 | `/api/status` | GET | Engine and server status |
 
@@ -208,6 +217,10 @@ Auto detect uses the site's turn metadata, the selected move-list entry, the las
 The Depth selector trades speed for strength (8 to 20).
 The overlay lists the engine's five best moves, best first, and the minimize button collapses it to a one-line bar that keeps analysing and shows the suggested move.
 **Suggest weaker moves** recommends a line that gives up about 0.4 to 1.5 pawns against the best move (an inaccuracy), never a mistake or blunder; when no line qualifies it suggests the best move.
+**Vs bot** appears only in games against a computer: Chess.com's computer play pages (`/play/computer`, `/game/computer`), and Lichess games against the Stockfish AI or a BOT account.
+It can suggest moves at a rated strength (Elo 1320 to 2500), or throw the game by about move 25, 30, 40, or 50 using the same plan as the app's **Throw the game** mode.
+In games against people the row stays hidden and the overlay uses Coach mode, even if a vs-bot mode was chosen earlier.
+On approximate DOM positions, the throw plan reads the move number from the move list.
 Paste a complete six-field FEN for accurate analysis when the page does not expose one.
 The Side selector overrides the side to move for approximate DOM analysis; it applies to the current position only and returns to Auto detect after the next move.
 Overlay evaluations are shown from White's point of view, like the lichess and chess.com eval bars.

@@ -45,9 +45,9 @@ test('turning sparring off discards a delayed engine move', async ({ page }) => 
   await load(page);
   let release; const gate = new Promise(r => { release = r; });
   let requested; const started = new Promise(r => { requested = r; });
-  await page.route('**/api/analyze/position', async route => {
+  await page.route('**/api/play/move', async route => {
     requested(); await gate;
-    await route.fulfill({ json: { topMoves: [{ uci: 'e7e5' }], bestEvalCp: 0 } }).catch(() => {});
+    await route.fulfill({ json: { uci: 'e7e5', evalCp: 0 } }).catch(() => {});
   });
   await page.locator('.sparring-toggle-label').click();
   await drag(page, 'e2', 'e4'); await started;
@@ -192,7 +192,7 @@ test('overlay polling does not discard an analysis slower than its poll interval
 
 test('undo takes back the engine reply in sparring and never wipes history from the start position', async ({ page }) => {
   await load(page);
-  await page.route('**/api/analyze/position', route => route.fulfill({ json: { topMoves: [{ uci: 'e7e5', evalCp: 0, pv: 'e7e5' }], bestEvalCp: 0 } }));
+  await page.route('**/api/play/move', route => route.fulfill({ json: { uci: 'e7e5', evalCp: 0 } }));
   await page.locator('.sparring-toggle-label').click();
   await drag(page, 'e2', 'e4');
   await expect(page.locator('#moveList .move-san')).toHaveText(['e4', 'e5']);
@@ -352,11 +352,9 @@ for (const action of ['reset', 'load FEN']) {
 test('the final reviewed position resumes sparring without playing over earlier review plies', async ({ page }) => {
   await load(page);
   const searchedPositions = [];
-  await page.route('**/api/analyze/position', route => {
+  await page.route('**/api/play/move', route => {
     searchedPositions.push(route.request().postDataJSON().fen);
-    return route.fulfill({ json: {
-      topMoves: [{ uci: 'b8c6', evalCp: 0, pv: 'b8c6' }], bestEvalCp: 0
-    } });
+    return route.fulfill({ json: { uci: 'b8c6', evalCp: 0 } });
   });
   await page.locator('.sparring-toggle-label').click();
   await page.locator('[data-tab="game-review"]').click();
@@ -380,12 +378,12 @@ test('opening continuations cannot play the engine turn during sparring', async 
   await expect(continuation).toBeVisible();
   let release;
   const gate = new Promise(resolve => { release = resolve; });
-  await page.route('**/api/analyze/position', async route => {
+  await page.route('**/api/play/move', async route => {
     await gate;
-    await route.fulfill({ json: { topMoves: [{ uci: 'd2d4', evalCp: 0, pv: 'd2d4' }], bestEvalCp: 0 } }).catch(() => {});
+    await route.fulfill({ json: { uci: 'd2d4', evalCp: 0 } }).catch(() => {});
   });
   await page.locator('#sparringColor').selectOption('b');
-  const requested = page.waitForRequest('**/api/analyze/position');
+  const requested = page.waitForRequest('**/api/play/move');
   await page.locator('.sparring-toggle-label').click();
   await requested;
   await continuation.click();
@@ -517,10 +515,10 @@ test('returning to the latest position resumes a cancelled sparring reply', asyn
   let release;
   const gate = new Promise(resolve => { release = resolve; });
   let requests = 0;
-  await page.route('**/api/analyze/position', async route => {
+  await page.route('**/api/play/move', async route => {
     requests += 1;
     if (requests === 1) await gate;
-    await route.fulfill({ json: { topMoves: [{ uci: 'e7e5' }], bestEvalCp: 0 } }).catch(() => {});
+    await route.fulfill({ json: { uci: 'e7e5', evalCp: 0 } }).catch(() => {});
   });
   await page.locator('.sparring-toggle-label').click();
   await drag(page, 'e2', 'e4');
@@ -620,4 +618,41 @@ test('superseded analysis and disabled coach requests are aborted', async ({ pag
   release();
   await expect(page.locator('#coachCard')).toBeHidden();
   await expect(page.locator('.pv-line')).toHaveCount(0);
+});
+
+test('play mode sends the chosen strength and shows the lose-by picker only when throwing the game', async ({ page }) => {
+  await load(page);
+  const bodies = [];
+  await page.route('**/api/play/move', route => {
+    bodies.push(route.request().postDataJSON());
+    return route.fulfill({ json: { uci: bodies.length === 1 ? 'e7e5' : 'b8c6', evalCp: 0 } });
+  });
+  await expect(page.locator('#sparringLoseByField')).toBeHidden();
+  await page.locator('#sparringLevel').selectOption('1900');
+  await page.locator('.sparring-toggle-label').click();
+  await drag(page, 'e2', 'e4');
+  await expect(page.locator('#moveList .move-san')).toHaveText(['e4', 'e5']);
+  expect(bodies[0]).toMatchObject({ mode: 'elo', elo: 1900, fen: afterE4 });
+
+  await page.locator('#sparringLevel').selectOption('lose');
+  await expect(page.locator('#sparringLoseByField')).toBeVisible();
+  await page.locator('#sparringLoseBy').selectOption('40');
+  await drag(page, 'g1', 'f3');
+  await expect(page.locator('#moveList .move-san')).toHaveText(['e4', 'e5', 'Nf3', 'Nc6']);
+  expect(bodies[1]).toMatchObject({ mode: 'lose', loseBy: 40, moveNumber: 2 });
+});
+
+test('play endpoint answers every mode with a legal move from the real engine', async ({ request }) => {
+  const legalReplies = new Set(['a7a6', 'a7a5', 'b7b6', 'b7b5', 'c7c6', 'c7c5', 'd7d6', 'd7d5', 'e7e6', 'e7e5',
+    'f7f6', 'f7f5', 'g7g6', 'g7g5', 'h7h6', 'h7h5', 'b8a6', 'b8c6', 'g8f6', 'g8h6']);
+  for (const body of [{ mode: 'elo', elo: 1320 }, { mode: 'full' }, { mode: 'lose', loseBy: 30 }]) {
+    const response = await request.post('/api/play/move', { data: { fen: afterE4, ...body } });
+    expect(response.status()).toBe(200);
+    const result = await response.json();
+    expect(legalReplies.has(result.uci)).toBe(true);
+    expect(typeof result.evalCp).toBe('number');
+  }
+  for (const data of [{ fen: afterE4, mode: 'elo', elo: 900 }, { fen: afterE4, mode: 'cheat' }, { fen: afterE4, mode: 'lose', loseBy: 5 }]) {
+    expect((await request.post('/api/play/move', { data })).status()).toBe(400);
+  }
 });

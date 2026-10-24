@@ -301,7 +301,7 @@ Resetting or loading a FEN also clears the previous game review and its navigati
 
 - **Frontend**: Vanilla JS (ES modules), chess.js, chessboardjs, Canvas API (libraries served locally from `vendor/`)
 - **Backend**: Node.js (built-in modules and bundled chess.js; no npm runtime install required)
-- **Engine**: Stockfish dev-20261017-effdc3fd (post-19 development build, compiled from source)
+- **Engine**: Stockfish dev-20261024-dbe600b7 (post-19 development build, compiled from source)
 - **Protocol**: UCI over stdin/stdout, SSE for streaming
 
 ## License

@@ -1,7 +1,7 @@
 import { EngineWorker } from './engine-worker.js';
 import {
-  HttpError, MATE_THRESHOLD, START_FEN, clampEval, classify, detectOpening, mapWithConcurrency,
-  parsePgnMoves, parseScore, requireInteger, validateFen
+  ENGINE_ELO_MAX, ENGINE_ELO_MIN, HttpError, MATE_THRESHOLD, START_FEN, chooseLosingMove, clampEval, classify,
+  detectOpening, mapWithConcurrency, parsePgnMoves, parseScore, requireInteger, validateFen
 } from './chess-analysis.js';
 import http from 'node:http';
 import os from 'node:os';
@@ -175,6 +175,29 @@ class EnginePool {
     return moves;
   }
 
+  // Rated play is randomised by Stockfish itself, so it is never cached.
+  async playAtElo({ fen, elo, movetime = 500, signal }) {
+    if (!this.enabled) throw new Error('Stockfish is not available. Set STOCKFISH_BIN or build engine/Stockfish.');
+    return this.acquire().run(async (w) => {
+      w.send('setoption name MultiPV value 1');
+      w.send('setoption name UCI_LimitStrength value true');
+      w.send(`setoption name UCI_Elo value ${elo}`);
+      w.send(`position fen ${fen}`);
+      w.send(`go movetime ${movetime}`);
+      let evalCp = 0;
+      let line = await w.waitFor(() => true, 5000);
+      while (!line.startsWith('bestmove')) {
+        const m = line.match(/score (cp|mate) (-?\d+)/);
+        if (m) evalCp = parseScore(m[1], m[2]);
+        line = await w.waitFor(() => true, 5000);
+      }
+      const uci = line.split(' ')[1];
+      // Workers are shared with analysis, so restore full strength before releasing this one.
+      w.send('setoption name UCI_LimitStrength value false');
+      return { uci: uci === '(none)' ? null : uci, evalCp };
+    }, signal);
+  }
+
   async evaluateMove(fen, move, movetime = 120, signal) {
     if (!this.enabled) throw new Error('Stockfish is not available. Set STOCKFISH_BIN or build engine/Stockfish.');
     return this.acquire().run(async (w) => {
@@ -259,6 +282,34 @@ async function analyzePositionRequest(req, res, signal) {
     multipv: requireInteger(body.settings?.multiPv, { name: 'multiPv', defaultValue: 3, min: 1, max: 5 })
   });
   return sendJson(res, 200, result);
+}
+
+const PLAY_MODES = new Set(['elo', 'full', 'lose']);
+
+async function playMoveRequest(req, res, signal) {
+  if (!pool.enabled) return sendJson(res, 503, { error: 'Stockfish unavailable.' });
+  const body = await readJsonObject(req, signal);
+  const fen = validateFen(body.fen);
+  const mode = body.mode ?? 'elo';
+  if (!PLAY_MODES.has(mode)) throw new HttpError(400, 'mode must be one of elo, full, lose.');
+
+  if (mode === 'elo') {
+    const elo = requireInteger(body.elo, { name: 'elo', defaultValue: 1600, min: ENGINE_ELO_MIN, max: ENGINE_ELO_MAX });
+    const { uci, evalCp } = await pool.playAtElo({ fen, elo, signal });
+    return sendJson(res, 200, { fen, mode, uci, evalCp });
+  }
+
+  if (mode === 'full') {
+    const { topMoves, bestEvalCp } = await pool.analyzePosition({ fen, depth: 16, multipv: 1, signal });
+    return sendJson(res, 200, { fen, mode, uci: topMoves[0]?.uci ?? null, evalCp: bestEvalCp });
+  }
+
+  const loseBy = requireInteger(body.loseBy, { name: 'loseBy', defaultValue: 30, min: 20, max: 80 });
+  const fullmove = Number(fen.split(' ')[5]) || 1;
+  const moveNumber = requireInteger(body.moveNumber, { name: 'moveNumber', defaultValue: fullmove, min: 1, max: 1000 });
+  const { topMoves } = await pool.analyzePosition({ fen, depth: 10, multipv: 10, signal });
+  const choice = chooseLosingMove(topMoves, { moveNumber, loseBy });
+  return sendJson(res, 200, { fen, mode, uci: choice?.uci ?? null, evalCp: choice?.evalCp ?? 0 });
 }
 
 async function analyzeAllMovesRequest(req, res, signal) {
@@ -380,6 +431,7 @@ async function dispatchApi(req, res, signal) {
   // Server-sent events stream
   if (route === 'POST /api/analyze/all-moves') return analyzeAllMovesRequest(req, res, signal);
   if (route === 'POST /api/analyze/game') return analyzeGameRequest(req, res, signal);
+  if (route === 'POST /api/play/move') return playMoveRequest(req, res, signal);
 
   if (route === 'GET /api/opening') {
     const moves = (url.searchParams.get('moves') || '').split(' ').filter(Boolean);

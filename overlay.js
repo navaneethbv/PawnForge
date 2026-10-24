@@ -48,6 +48,11 @@
   // an inaccuracy, never a mistake or blunder.
   const WEAKER_MIN_LOSS_CP = 40;
   const WEAKER_MAX_LOSS_CP = 150;
+  // Bot-game modes: play at a rated strength, or lose believably around a chosen move.
+  // They are offered only while the opponent is a computer (see isBotGame).
+  const BOT_MODES = ['coach', 'elo:1320', 'elo:1600', 'elo:1900', 'elo:2200', 'elo:2500', 'lose:25', 'lose:30', 'lose:40', 'lose:50'];
+  let botMode = 'coach';
+  let botGameDetected = false;
   let minimized = false;
   let lastPositionKey = '';
   let activeCandidates = [];
@@ -96,6 +101,7 @@
       user-select: none;
     }
     #pawnforge-hud[hidden] { display: none; }
+    #pawnforge-hud [hidden] { display: none !important; }
     #pawnforge-hud, #pawnforge-hud * { box-sizing: border-box; }
     #pawnforge-hud-header {
       display: flex;
@@ -324,6 +330,25 @@
         </select>
         <button id="pawnforge-analyze" type="button">Analyze</button>
       </div>
+      <div class="pawnforge-control-row" id="pawnforge-bot-row" hidden>
+        <label for="pawnforge-bot-mode">Vs bot</label>
+        <select id="pawnforge-bot-mode" aria-label="Suggestion mode against a computer opponent">
+          <option value="coach">Coach (best lines)</option>
+          <optgroup label="Play at rated strength">
+            <option value="elo:1320">Elo 1320</option>
+            <option value="elo:1600">Elo 1600</option>
+            <option value="elo:1900">Elo 1900</option>
+            <option value="elo:2200">Elo 2200</option>
+            <option value="elo:2500">Elo 2500</option>
+          </optgroup>
+          <optgroup label="Throw the game">
+            <option value="lose:25">Lose by ~move 25</option>
+            <option value="lose:30">Lose by ~move 30</option>
+            <option value="lose:40">Lose by ~move 40</option>
+            <option value="lose:50">Lose by ~move 50</option>
+          </optgroup>
+        </select>
+      </div>
       <div class="pawnforge-control-row">
         <label for="pawnforge-depth">Depth</label>
         <select id="pawnforge-depth" aria-label="Engine search depth">
@@ -362,6 +387,8 @@
   const hintEl = hud.querySelector('#pawnforge-hint');
   const approximateEl = hud.querySelector('#pawnforge-approximate');
   const weakerEl = hud.querySelector('#pawnforge-weaker');
+  const botRowEl = hud.querySelector('#pawnforge-bot-row');
+  const botModeEl = hud.querySelector('#pawnforge-bot-mode');
   const minimizeEl = hud.querySelector('#pawnforge-minimize');
   const miniSummaryEl = hud.querySelector('#pawnforge-mini-summary');
   endpointEl.value = endpoint;
@@ -1047,8 +1074,52 @@
     minimizeEl.setAttribute('aria-expanded', String(!minimized));
   }
 
+  // True only when the opponent is a computer: chess.com's computer play pages, or a lichess game
+  // against its Stockfish AI or a BOT account. Rated-strength and losing suggestions are limited
+  // to these games; in games against people the overlay stays in Coach mode.
+  function isBotGame() {
+    const host = location.hostname;
+    if (/(^|\.)chess\.com$/.test(host)) return /^\/(play|game)\/computer(\/|$)/.test(location.pathname);
+    if (/(^|\.)lichess\.org$/.test(host)) {
+      const players = [...document.querySelectorAll('.ruser, .ruser-top, .ruser-bottom')];
+      return players.some((player) => player.querySelector('[data-bot]') || /\bStockfish level \d\b/.test(player.textContent));
+    }
+    return false;
+  }
+
+  function updateBotRow() {
+    const detected = isBotGame();
+    if (detected === botGameDetected) return;
+    botGameDetected = detected;
+    botRowEl.hidden = !detected;
+    // The effective mode changed, so the position needs a fresh suggestion.
+    if (botMode !== 'coach') lastPositionKey = '';
+  }
+
+  // The bot-mode request for this position, or null for normal coaching.
+  function botPlayRequest(snapshot) {
+    if (!botGameDetected || botMode === 'coach') return null;
+    const [mode, value] = botMode.split(':');
+    if (mode === 'elo') return { mode, elo: Number(value) };
+    return { mode, loseBy: Number(value), moveNumber: currentMoveNumber(snapshot) };
+  }
+
+  // Exact FENs carry the move number; approximate DOM positions do not, so read the move list.
+  function currentMoveNumber(snapshot) {
+    const fromFen = Number(snapshot.fen.split(' ')[5]);
+    if (!snapshot.approximate && fromFen > 0) return fromFen;
+    const indices = [...document.querySelectorAll('l4x i5z, .moves index, .main-line-row[data-whole-move-number]')]
+      .map((element) => Number(element.dataset.wholeMoveNumber ?? element.textContent.replace(/\D/g, '')))
+      .filter((n) => Number.isInteger(n) && n > 0);
+    if (indices.length === 0) return 1;
+    const last = Math.max(...indices);
+    // The last numbered row is complete once Black has replied, so White's next move starts a new one.
+    return snapshot.fen.split(' ')[1] === 'w' ? last + 1 : last;
+  }
+
   async function analyzePosition(force = false, { optIn = false } = {}) {
     if (!active) return;
+    updateBotRow();
     const snapshot = await detectCurrentPosition();
     if (!active) return;
     if (analysisInFlight) {
@@ -1130,7 +1201,8 @@
     analysisController = new AbortController();
 
     try {
-      const payload = { fen: snapshot.fen, settings: { depth, multiPv: CANDIDATE_COUNT } };
+      const play = botPlayRequest(snapshot);
+      const payload = play ? { fen: snapshot.fen, play } : { fen: snapshot.fen, settings: { depth, multiPv: CANDIDATE_COUNT } };
       let data;
       if (isExtension) {
         if (!extensionContextAlive()) {
@@ -1147,9 +1219,11 @@
         if (result?.error) throw new Error(result.error);
         data = result.data;
       } else {
-        const response = await fetch(endpoint, {
+        const url = play ? new URL('/api/play/move', endpoint) : endpoint;
+        const body = play ? { fen: snapshot.fen, ...play } : payload;
+        const response = await fetch(url, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload), signal: analysisController.signal
+          body: JSON.stringify(body), signal: analysisController.signal
         });
         data = await response.json();
         if (!response.ok) throw new Error(data.error || `Engine returned HTTP ${response.status}`);
@@ -1164,6 +1238,19 @@
         setMessage(latestSnapshot?.unstable ? 'Waiting for the board to settle...' : 'Board changed. Re-analyzing...');
         setHint(latestSnapshot?.unstable ? 'The site is animating or exposing duplicate pieces.' : 'The position changed while the engine was thinking.');
         window.setTimeout(() => analyzePosition(false), POSITION_STABILITY_MS + 25);
+        return;
+      }
+      if (play) {
+        // A bot-mode suggestion is deliberately not the best move, so it cannot judge the next one.
+        previousAnalysis = null;
+        clearVerdict();
+        if (!data.uci) {
+          setMessage('The engine returned no legal moves for this position.');
+          return;
+        }
+        renderCandidates([{ uci: data.uci, evalCp: data.evalCp, pv: data.uci }]);
+        const plan = play.mode === 'elo' ? `playing at Elo ${play.elo}` : `throwing the game by about move ${play.loseBy} (now move ${play.moveNumber})`;
+        setHint(`Vs bot: ${plan}.`);
         return;
       }
       const verdict = previousAnalysis && judgePlayedMove(previousAnalysis, snapshot, data);
@@ -1218,7 +1305,7 @@
   async function loadSettings() {
     if (!extensionStorage) return;
     try {
-      const stored = await extensionStorage.get(['endpoint', 'approximate', 'depth', 'weaker', 'minimized']);
+      const stored = await extensionStorage.get(['endpoint', 'approximate', 'depth', 'weaker', 'minimized', 'botMode']);
       // A stored value applies only when it is valid and the user has not changed that setting meanwhile.
       const apply = (key, isValid, set) => {
         if (!editedSettings.has(key) && isValid(stored[key])) set(stored[key]);
@@ -1228,6 +1315,8 @@
       apply('weaker', isBoolean, (value) => { weakerEl.checked = value; });
       apply('minimized', isBoolean, setMinimized);
       apply('depth', (value) => DEPTH_CHOICES.includes(value), (value) => { depth = value; });
+      apply('botMode', (value) => BOT_MODES.includes(value), (value) => { botMode = value; });
+      botModeEl.value = botMode;
       depthEl.value = String(depth);
       if (!editedSettings.has('endpointField')) endpointEl.value = endpoint;
     } catch (_error) {
@@ -1238,7 +1327,7 @@
   function persistSettings() {
     if (!extensionStorage || !extensionContextAlive()) return;
     try {
-      extensionStorage.set({ endpoint, depth, minimized, approximate: approximateEl.checked, weaker: weakerEl.checked }).catch(() => {});
+      extensionStorage.set({ endpoint, depth, minimized, botMode, approximate: approximateEl.checked, weaker: weakerEl.checked }).catch(() => {});
     } catch (_error) {
       // The extension was reloaded; the next poll shuts this orphaned instance down.
     }
@@ -1321,6 +1410,15 @@
     sideMode = sideEl.value;
     manualSidePlacement = null;
     persistSettings();
+    lastPositionKey = '';
+    void analyzePosition(true);
+  });
+  botModeEl.addEventListener('change', () => {
+    if (!BOT_MODES.includes(botModeEl.value)) return;
+    botMode = botModeEl.value;
+    editedSettings.add('botMode');
+    persistSettings();
+    previousAnalysis = null;
     lastPositionKey = '';
     void analyzePosition(true);
   });

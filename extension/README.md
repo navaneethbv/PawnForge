@@ -35,7 +35,11 @@ A manual FEN takes precedence and supplies all six fields.
 The panel lists the five best engine moves, best first; select one to move the board highlights.
 The minimize button collapses the panel to a one-line bar that keeps analysing, highlights the suggested move on the board, and shows it with the last move's verdict.
 **Suggest weaker moves** selects the line with the largest loss between 0.4 and 1.5 pawns against the best move; if none qualifies it takes the closest weaker line under 1.5 pawns, and otherwise the best move.
-Both settings are remembered.
+**Vs bot** appears only in games against a computer: Chess.com's computer play pages (`/play/computer`, `/game/computer`), and Lichess games against the Stockfish AI or a BOT account.
+It can suggest moves at a rated strength (Elo 1320 to 2500), or throw the game by about move 25, 30, 40, or 50 using the same plan as the app's **Throw the game** mode.
+In games against people the row stays hidden and the overlay uses Coach mode, even if a vs-bot mode was chosen earlier.
+On approximate DOM positions, the throw plan reads the move number from the move list.
+These settings are remembered.
 The Depth selector sets the engine search depth (8, 12, 16 or 20); changing it starts a fresh blunder-detector history because evaluations from different depths are not comparable.
 
 The overlay can render red origin and destination pointers over any visible square-based or DOM-backed chessboard.

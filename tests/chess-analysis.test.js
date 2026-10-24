@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  MATE_SCORE, START_FEN, clampEval, classify, detectOpening, findContinuations,
-  mapWithConcurrency, parsePgnMoves, parseScore, validateFen
+  MATE_SCORE, START_FEN, chooseLosingMove, clampEval, classify, detectOpening, findContinuations,
+  losingPlan, mapWithConcurrency, parsePgnMoves, parseScore, validateFen
 } from '../chess-analysis.js';
 
 test('mate scores keep their distance and ordering', () => {
@@ -100,4 +100,44 @@ test('unsafe positions are rejected before they reach Stockfish', () => {
     '7k/6Q1/5K2/8/8/8/8/8 b - - 0 1',
     '4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 2'
   ]) assert.equal(validateFen(fen), fen);
+});
+
+const candidates = (...evals) => evals.map((evalCp, i) => ({ uci: `m${i}`, evalCp }));
+const first = () => 0;
+
+test('the losing plan holds level early, drifts in the middlegame, and collapses near the target', () => {
+  assert.deepEqual(losingPlan(5, 30), { targetCp: 0, maxDropCp: 80, allowMated: false });
+  assert.equal(losingPlan(11, 30).targetCp, 0);
+  const middle = [13, 16, 19, 21].map((n) => losingPlan(n, 30).targetCp);
+  assert.deepEqual([...middle].sort((a, b) => b - a), middle);
+  assert.ok(middle.every((cp) => cp < 0 && cp > -600));
+  assert.deepEqual(losingPlan(22, 30), { targetCp: -1000, maxDropCp: 400, allowMated: true });
+  assert.equal(losingPlan(10, 50).targetCp, 0);
+});
+
+test('throwing the game never hangs material in the opening', () => {
+  // A level opening position with one move that drops a knight.
+  const move = chooseLosingMove(candidates(30, 10, -5, -290), { moveNumber: 4, loseBy: 30, random: first });
+  assert.notEqual(move.uci, 'm3');
+  // Already level: the plan keeps it level rather than conceding.
+  assert.equal(chooseLosingMove(candidates(40, 5, -60), { moveNumber: 4, loseBy: 30, random: first }).uci, 'm1');
+});
+
+test('throwing the game concedes gradually toward the target and caps each concession', () => {
+  // Move 19 of a 30-move plan targets -436cp; -300 is nearer but would give away 4 pawns at once.
+  const move = chooseLosingMove(candidates(100, 20, -70, -300), { moveNumber: 19, loseBy: 30, random: first });
+  assert.equal(move.uci, 'm2');
+  // Nothing may give away more than the per-move cap, even if it is nearest the target.
+  assert.equal(chooseLosingMove(candidates(400, 350, -300), { moveNumber: 19, loseBy: 30, random: first }).uci, 'm1');
+});
+
+test('throwing the game plays the best move when already behind schedule', () => {
+  assert.equal(chooseLosingMove(candidates(-500, -700), { moveNumber: 16, loseBy: 30, random: first }).uci, 'm0');
+});
+
+test('throwing the game walks into mate only in the collapse phase', () => {
+  const mated = -(MATE_SCORE - 2);
+  assert.notEqual(chooseLosingMove(candidates(-100, mated), { moveNumber: 15, loseBy: 30, random: first }).uci, 'm1');
+  assert.equal(chooseLosingMove(candidates(-700, mated), { moveNumber: 24, loseBy: 30, random: first }).uci, 'm1');
+  assert.equal(chooseLosingMove([], { moveNumber: 29, loseBy: 30 }), null);
 });

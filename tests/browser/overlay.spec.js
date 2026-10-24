@@ -480,3 +480,68 @@ test('a changed position cancels the overlay search and starts the new one', asy
   await expect(page.locator('#pawnforge-hud-msg')).toContainText('E2');
   release();
 });
+
+// Serves an empty page at a site URL, so the overlay sees that site's hostname and path.
+async function openSiteUrl(page, url) {
+  await page.route(url, (route) => route.fulfill({ contentType: 'text/html', body: '<!doctype html><html><body></body></html>' }));
+  await page.goto(url);
+}
+
+test('vs-bot modes appear only on computer games and send rated or losing play requests', async ({ page }) => {
+  const plays = [];
+  await page.route('**/api/play/move', async (route) => {
+    plays.push(route.request().postDataJSON());
+    await route.fulfill({ json: { uci: 'h7h6', evalCp: -20 } });
+  });
+  await routeAnalysis(page);
+  await openSiteUrl(page, 'http://www.chess.com/play/computer');
+  await chessComFixture(page);
+  await page.locator('.main-line-row').evaluate((row) => { row.dataset.wholeMoveNumber = '7'; });
+  await injectOverlay(page);
+  await page.locator('#pawnforge-approximate').check();
+  await expect(page.locator('#pawnforge-bot-row')).toBeVisible();
+
+  await page.locator('#pawnforge-bot-mode').selectOption('lose:30');
+  await expect.poll(() => plays.length).toBeGreaterThan(0);
+  expect(plays.at(-1)).toEqual({ fen: blackToMove, mode: 'lose', loseBy: 30, moveNumber: 7 });
+  await expect(page.locator('#pawnforge-hint')).toContainText('throwing the game by about move 30');
+  await expect(page.locator('#pawnforge-hud-candidates button')).toHaveCount(1);
+
+  await page.locator('#pawnforge-bot-mode').selectOption('elo:1900');
+  await expect.poll(() => plays.at(-1)).toEqual({ fen: blackToMove, mode: 'elo', elo: 1900 });
+});
+
+test('vs-bot modes stay hidden in games against people', async ({ page }) => {
+  const plays = [];
+  await page.route('**/api/play/move', (route) => { plays.push(route.request().url()); return route.abort(); });
+  const fens = await routeAnalysis(page);
+  await openSiteUrl(page, 'http://www.chess.com/game/live/123');
+  await chessComFixture(page);
+  await injectOverlay(page);
+  await page.locator('#pawnforge-approximate').check();
+  await expect(page.locator('#pawnforge-hud-candidates button').first()).toBeVisible();
+  await expect(page.locator('#pawnforge-bot-row')).toBeHidden();
+  // A mode chosen earlier (for example in a bot game) must not apply here.
+  await page.locator('#pawnforge-bot-mode').selectOption({ value: 'lose:30' }, { force: true });
+  await expect.poll(() => fens.length).toBeGreaterThan(1);
+  expect(plays).toEqual([]);
+});
+
+test('lichess games against the Stockfish AI or a BOT account count as bot games', async ({ page }) => {
+  await routeAnalysis(page);
+  const players = {
+    ai: '<span>Stockfish level 3</span>',
+    bot: '<span class="utitle" data-bot>BOT</span> maia1',
+    human: '<span>Magnus</span>'
+  };
+  await page.route('http://lichess.org/**', (route) => route.fulfill({
+    contentType: 'text/html',
+    body: `<!doctype html><html><body><div class="ruser ruser-top">${players[new URL(route.request().url()).pathname.slice(1)]}</div></body></html>`
+  }));
+  for (const [path, visible] of [['ai', true], ['bot', true], ['human', false]]) {
+    await page.goto(`http://lichess.org/${path}`);
+    await injectOverlay(page);
+    await expect(page.locator('#pawnforge-hud')).toBeVisible();
+    await expect(page.locator('#pawnforge-bot-row')).toBeVisible({ visible });
+  }
+});

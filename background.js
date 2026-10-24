@@ -6,6 +6,16 @@ function engineSettings(settings) {
   return { depth, multiPv: 5 };
 }
 
+// Bot-game play settings mirror the overlay's choices; anything else is not relayed.
+const PLAY_ELOS = [1320, 1600, 1900, 2200, 2500];
+const PLAY_LOSE_BY = [25, 30, 40, 50];
+function playSettings(play) {
+  const moveNumber = Number.isInteger(play?.moveNumber) && play.moveNumber >= 1 && play.moveNumber <= 1000 ? play.moveNumber : undefined;
+  if (play?.mode === 'elo' && PLAY_ELOS.includes(play.elo)) return { mode: 'elo', elo: play.elo };
+  if (play?.mode === 'lose' && PLAY_LOSE_BY.includes(play.loseBy)) return { mode: 'lose', loseBy: play.loseBy, moveNumber };
+  return null;
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === 'cancel-analysis' && sender.tab?.id) {
     const request = requests.get(sender.tab.id);
@@ -25,12 +35,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const request = { controller, requestId: message.requestId };
     requests.set(tabId, request);
     const timer = setTimeout(() => controller.abort(), 20000);
-    const localEndpoint = new URL('http://127.0.0.1/api/analyze/position');
+    const play = message.payload?.play ? playSettings(message.payload.play) : null;
+    const localEndpoint = new URL(play ? 'http://127.0.0.1/api/play/move' : 'http://127.0.0.1/api/analyze/position');
     localEndpoint.port = String(Number(url.port || 80));
+    const body = play
+      ? { fen: message.payload?.fen, ...play }
+      : { fen: message.payload?.fen, settings: engineSettings(message.payload?.settings) };
     fetch(localEndpoint, {
       redirect: 'error',
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ fen: message.payload?.fen, settings: engineSettings(message.payload?.settings) }),
+      body: JSON.stringify(body),
       signal: controller.signal
     }).then(async (response) => {
       const data = await response.json();

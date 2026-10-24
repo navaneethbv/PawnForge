@@ -98,6 +98,8 @@ const el = {
   sparringToggle: $('sparringToggle'),
   sparringColor: $('sparringColor'),
   sparringLevel: $('sparringLevel'),
+  sparringLoseBy: $('sparringLoseBy'),
+  sparringLoseByField: $('sparringLoseByField'),
   soundToggleBtn: $('soundToggleBtn'),
   copyFenBtn: $('copyFenBtn'),
   copyPgnBtn: $('copyPgnBtn'),
@@ -641,14 +643,25 @@ function invalidateSparring() {
   isEngineThinking = false;
 }
 
+function sparringRequest(fen) {
+  const level = el.sparringLevel.value;
+  if (level === 'full') return { fen, mode: 'full' };
+  if (level === 'lose') {
+    // Count moves from where this game started, so a loaded FEN gets the whole plan.
+    const moveNumber = Number(fen.split(' ')[5]) - Number(initialFen.split(' ')[5]) + 1;
+    return { fen, mode: 'lose', loseBy: Number(el.sparringLoseBy.value), moveNumber: Math.max(1, moveNumber) };
+  }
+  return { fen, mode: 'elo', elo: Number(level) };
+}
+
 function applySparringResult(res, fen) {
-  if (!res.topMoves?.length) return;
-  const uci = res.topMoves[0].uci;
+  const uci = res.uci;
+  if (!uci) return;
   let move = null;
   try { move = game.move({ from: uci.slice(0, 2), to: uci.slice(2, 4), promotion: uci[4] || 'q' }); } catch (_e) {}
   if (!move) return;
   commitMove(move);
-  updateEvalBar(toWhiteRelativeEval(res.bestEvalCp, fen));
+  updateEvalBar(toWhiteRelativeEval(res.evalCp, fen));
 }
 
 async function checkSparringTurn() {
@@ -661,8 +674,7 @@ async function checkSparringTurn() {
   isEngineThinking = true;
   setEngineStatus('Engine is thinking…', 'active');
   try {
-    const depth = Number(el.sparringLevel.value);
-    const res = await postJson('/api/analyze/position', { fen, settings: { depth, multiPv: 1 } }, sparringController.signal);
+    const res = await postJson('/api/play/move', sparringRequest(fen), sparringController.signal);
     if (requestId !== sparringRequestId || !sparringActive || playerColor !== sparringPlayerColor || game.fen() !== fen) return;
     applySparringResult(res, fen);
     setEngineStatus('Your move', 'idle');
@@ -1830,6 +1842,9 @@ function bindUI() {
       setEngineStatus('Ready', 'idle');
     }
     void updateCoachHint();
+  });
+  el.sparringLevel.addEventListener('change', () => {
+    el.sparringLoseByField.hidden = el.sparringLevel.value !== 'lose';
   });
   el.sparringColor.addEventListener('change', (e) => {
     invalidateSparring();

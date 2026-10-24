@@ -184,9 +184,27 @@
               <label class="field">
                 <span class="field-label">Strength</span>
                 <select id="sparringLevel">
-                  <option value="8">Casual · depth 8</option>
-                  <option value="12" selected>Club · depth 12</option>
-                  <option value="16">Master · depth 16</option>
+                  <optgroup label="Rated strength">
+                    <option value="1320">Beginner · 1320</option>
+                    <option value="1600" selected>Casual · 1600</option>
+                    <option value="1900">Club · 1900</option>
+                    <option value="2200">Expert · 2200</option>
+                    <option value="2500">Master · 2500</option>
+                    <option value="2800">Grandmaster · 2800</option>
+                    <option value="full">Full strength</option>
+                  </optgroup>
+                  <optgroup label="Training">
+                    <option value="lose">Throw the game</option>
+                  </optgroup>
+                </select>
+              </label>
+              <label id="sparringLoseByField" class="field" hidden>
+                <span class="field-label">Lose by move</span>
+                <select id="sparringLoseBy">
+                  <option value="25">~25</option>
+                  <option value="30" selected>~30</option>
+                  <option value="40">~40</option>
+                  <option value="50">~50</option>
                 </select>
               </label>
             </div>

@@ -205,3 +205,41 @@ export function detectOpening(moveList, { startFen = START_FEN } = {}) {
     continuations: findContinuations(moveList)
   };
 }
+
+// ── Sparring strength ──
+// Stockfish's UCI_Elo range (Search::Skill::LowestElo / HighestElo).
+export const ENGINE_ELO_MIN = 1320;
+export const ENGINE_ELO_MAX = 3190;
+
+// "Throw the game" plays a believable loss: level through the opening, concede
+// a little each move through the middlegame, and only collapse near `loseBy`.
+export function losingPlan(moveNumber, loseBy) {
+  // Converting a lost position takes most opponents about eight moves, so the
+  // collapse starts that far ahead of the target.
+  const holdUntil = Math.max(8, Math.round(loseBy * 0.35));
+  const collapseFrom = loseBy - 8;
+  if (moveNumber <= holdUntil) return { targetCp: 0, maxDropCp: 80, allowMated: false };
+  if (moveNumber < collapseFrom) {
+    const progress = (moveNumber - holdUntil) / (collapseFrom - holdUntil);
+    return { targetCp: -Math.round(600 * progress), maxDropCp: 180, allowMated: false };
+  }
+  return { targetCp: -LOSS_CLAMP_CP, maxDropCp: 400, allowMated: true };
+}
+
+// Pick the candidate whose evaluation (side to move, best first) sits closest
+// to the plan's target without giving away more than `maxDropCp` in one move.
+export function chooseLosingMove(candidates, { moveNumber, loseBy, random = Math.random }) {
+  if (candidates.length === 0) return null;
+  const { targetCp, maxDropCp, allowMated } = losingPlan(moveNumber, loseBy);
+  const bestCp = clampEval(candidates[0].evalCp);
+  // Already behind schedule: play the best move so the game does not end early.
+  if (bestCp <= targetCp) return candidates[0];
+  const allowed = candidates.filter((c) => bestCp - clampEval(c.evalCp) <= maxDropCp
+    && (allowMated || c.evalCp > -MATE_THRESHOLD));
+  if (allowed.length === 0) return candidates[0];
+  const distance = (c) => Math.abs(clampEval(c.evalCp) - targetCp);
+  const closest = Math.min(...allowed.map(distance));
+  // Vary the choice among near-equal candidates so repeated games differ.
+  const pool = allowed.filter((c) => distance(c) <= closest + 25);
+  return pool[Math.floor(random() * pool.length)];
+}

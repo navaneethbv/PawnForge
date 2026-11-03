@@ -114,7 +114,7 @@ Open **http://localhost:4173** in your browser.
 
 ### Build Stockfish
 
-The engine source is included under `engine/Stockfish/` (Stockfish development build `dev-20261017-effdc3fd`, synced from upstream `master` after Stockfish 19). Build it for your platform:
+The engine source is included under `engine/Stockfish/` (Stockfish development build `dev-20261028-ff7cee42`, synced from upstream `master` after Stockfish 19). Build it for your platform:
 
 ```bash
 cd engine/Stockfish/src
@@ -124,6 +124,12 @@ make -j$(sysctl -n hw.ncpu) build ARCH=apple-silicon
 
 # On Linux (modern x86_64):
 make -j$(nproc) build ARCH=x86-64-modern
+```
+
+Because the engine is vendored, Stockfish's Makefile reads PawnForge's git commit when it stamps the version, so the binary reports PawnForge's date and hash instead of the upstream ones. To stamp the upstream version, pass it explicitly (the result appears in `/api/status` as `engineVersion`):
+
+```bash
+make -j$(nproc) build ARCH=x86-64-modern GIT_SHA=ff7cee42 GIT_DATE=20261028 GIT_DIFFINDEX=
 ```
 
 Common `ARCH` values:
@@ -314,7 +320,7 @@ Resetting or loading a FEN also clears the previous game review and its navigati
 
 - **Frontend**: Vanilla JS (ES modules), chess.js, chessboardjs, Canvas API (libraries served locally from `vendor/`)
 - **Backend**: Node.js (built-in modules and bundled chess.js; no npm runtime install required)
-- **Engine**: Stockfish dev-20261024-dbe600b7 (post-19 development build, compiled from source)
+- **Engine**: Stockfish dev-20261028-ff7cee42 (post-19 development build, compiled from source)
 - **Protocol**: UCI over stdin/stdout, SSE for streaming
 
 ## License

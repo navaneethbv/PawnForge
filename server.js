@@ -43,10 +43,12 @@ function resolveStockfish() {
 }
 
 const STOCKFISH_BIN = resolveStockfish();
-const ENGINE_CHECK = spawnSync(STOCKFISH_BIN, ['-h'], { stdio: 'ignore', timeout: 5000 });
+const ENGINE_CHECK = spawnSync(STOCKFISH_BIN, [], { input: 'uci\nquit\n', encoding: 'utf8', timeout: 5000 });
 const ENGINE_AVAILABLE = ENGINE_CHECK.status === 0 && !ENGINE_CHECK.error;
+// The UCI handshake names the exact build, e.g. "Stockfish dev-20261028-ff7cee42".
+const ENGINE_VERSION = ENGINE_AVAILABLE ? (ENGINE_CHECK.stdout.match(/^id name (.+)$/m)?.[1].trim() ?? null) : null;
 
-console.log(`Stockfish binary: ${STOCKFISH_BIN} (available: ${ENGINE_AVAILABLE})`);
+console.log(`Stockfish binary: ${STOCKFISH_BIN} (available: ${ENGINE_AVAILABLE}${ENGINE_VERSION ? `, ${ENGINE_VERSION}` : ''})`);
 
 const MIME = new Map([
   ['.html', 'text/html; charset=utf-8'],
@@ -443,6 +445,7 @@ async function dispatchApi(req, res, signal) {
   if (route === 'GET /api/status') {
     return sendJson(res, 200, {
       engine: pool.enabled ? 'stockfish' : 'unavailable',
+      engineVersion: ENGINE_VERSION,
       workers: pool.size,
       cacheSize: cache.cache.size,
       uptime: process.uptime()

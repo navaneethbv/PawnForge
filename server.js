@@ -48,7 +48,8 @@ const ENGINE_AVAILABLE = ENGINE_CHECK.status === 0 && !ENGINE_CHECK.error;
 // The UCI handshake names the exact build, e.g. "Stockfish dev-20261028-ff7cee42".
 const ENGINE_VERSION = ENGINE_AVAILABLE ? (ENGINE_CHECK.stdout.match(/^id name (.+)$/m)?.[1].trim() ?? null) : null;
 
-console.log(`Stockfish binary: ${STOCKFISH_BIN} (available: ${ENGINE_AVAILABLE}${ENGINE_VERSION ? `, ${ENGINE_VERSION}` : ''})`);
+const engineDetails = [`available: ${ENGINE_AVAILABLE}`, ENGINE_VERSION].filter(Boolean).join(', ');
+console.log(`Stockfish binary: ${STOCKFISH_BIN} (${engineDetails})`);
 
 const MIME = new Map([
   ['.html', 'text/html; charset=utf-8'],

@@ -1231,56 +1231,69 @@
     return formatEvaluation(pieceScoreFormat === 'white' ? whiteView(cp, sideToMove) : cp);
   }
 
+  // One entry per destination square; promotions reach a square several ways, so keep the best.
+  function bestMovePerTarget(moves) {
+    const byTarget = new Map();
+    for (const move of moves) {
+      const cp = Number(move.evalCp);
+      if (typeof move.uci !== 'string' || !Number.isFinite(cp)) continue;
+      const target = move.uci.slice(2, 4);
+      if (!byTarget.has(target) || cp > byTarget.get(target).cp) byTarget.set(target, { uci: move.uci, target, cp });
+    }
+    return [...byTarget.values()];
+  }
+
+  // Losses are measured against the position's best move when the main analysis has it.
+  function pieceReferenceCp(fen, pieceBest) {
+    const positionBest = previousAnalysis?.fen === fen ? Number(previousAnalysis.topMoves[0]?.evalCp) : Number.NaN;
+    return Number.isFinite(positionBest) ? Math.max(positionBest, pieceBest) : pieceBest;
+  }
+
+  function pieceMarker(className, kind, square) {
+    const marker = document.createElement('div');
+    marker.className = `pawnforge-pointer ${className}`;
+    marker.dataset.pawnforgePointer = kind;
+    marker.dataset.square = square;
+    return marker;
+  }
+
+  function pieceMoveMarker(entry, loss, isBest, sideToMove) {
+    const category = classifyLoss(loss);
+    const marker = pieceMarker('pawnforge-piece-move', 'piece-move', entry.target);
+    marker.classList.toggle('pawnforge-piece-move-best', isBest);
+    marker.dataset.category = category.key;
+    marker.style.setProperty('--pawnforge-score-color', VERDICT_COLORS[category.key]);
+    const label = document.createElement('span');
+    label.className = 'pawnforge-piece-move-label';
+    const promotion = entry.uci.length > 4 ? `=${entry.uci[4].toUpperCase()} ` : '';
+    label.textContent = `${promotion}${pieceScoreLabel(entry.cp, loss, sideToMove)}`;
+    marker.append(label);
+    return marker;
+  }
+
+  // Adds a marker for every destination and returns the status line describing them.
+  function addPieceMoveMarkers({ fen, square, moves }) {
+    const pieceName = pieceNameAt(fen, square);
+    const where = `${pieceName[0].toUpperCase()}${pieceName.slice(1)} on ${squareLabel(square)}`;
+    const entries = bestMovePerTarget(moves);
+    if (entries.length === 0) return `The ${pieceName} on ${squareLabel(square)} has no legal moves.`;
+    const sideToMove = fen.split(' ')[1];
+    const best = entries.reduce((top, entry) => (entry.cp > top.cp ? entry : top));
+    const referenceCp = clampEval(pieceReferenceCp(fen, best.cp));
+    const lossOf = (entry) => Math.max(0, referenceCp - clampEval(entry.cp));
+    for (const entry of entries) pieceMarkers.push(pieceMoveMarker(entry, lossOf(entry), entry === best, sideToMove));
+    const count = `${entries.length} ${entries.length === 1 ? 'move' : 'moves'}`;
+    return `${where}: ${count}, best ${squareLabel(best.target)} (${pieceScoreLabel(best.cp, lossOf(best), sideToMove)}). Green is best, red is a blunder.`;
+  }
+
   function renderPieceScores() {
     removePieceMarkers();
     if (!pieceScores) return;
     const { fen, square, moves } = pieceScores;
-    const sideToMove = fen.split(' ')[1];
-    const pieceName = pieceNameAt(fen, square);
-    const origin = document.createElement('div');
-    origin.className = 'pawnforge-pointer pawnforge-piece-origin';
-    origin.dataset.pawnforgePointer = 'piece-origin';
-    origin.dataset.square = square;
-    pieceMarkers.push(origin);
-    if (moves === null) {
-      pieceStatusEl.textContent = `Scoring the ${pieceName} on ${squareLabel(square)}…`;
-    } else if (moves.length === 0) {
-      pieceStatusEl.textContent = `The ${pieceName} on ${squareLabel(square)} has no legal moves.`;
-    } else {
-      // Promotions reach one square several ways; keep the best of them for that square.
-      const byTarget = new Map();
-      for (const move of moves) {
-        const cp = Number(move.evalCp);
-        if (typeof move.uci !== 'string' || !Number.isFinite(cp)) continue;
-        const target = move.uci.slice(2, 4);
-        if (!byTarget.has(target) || cp > byTarget.get(target).cp) byTarget.set(target, { uci: move.uci, cp });
-      }
-      // Losses are measured against the position's best move when the main analysis has it.
-      const pieceBest = Math.max(...[...byTarget.values()].map((entry) => entry.cp));
-      const positionBest = previousAnalysis?.fen === fen ? Number(previousAnalysis.topMoves[0]?.evalCp) : Number.NaN;
-      const bestCp = Number.isFinite(positionBest) ? Math.max(positionBest, pieceBest) : pieceBest;
-      let bestEntry = null;
-      for (const [target, entry] of byTarget) {
-        const loss = Math.max(0, clampEval(bestCp) - clampEval(entry.cp));
-        const category = classifyLoss(loss);
-        const marker = document.createElement('div');
-        marker.className = 'pawnforge-pointer pawnforge-piece-move';
-        if (entry.cp === pieceBest) marker.classList.add('pawnforge-piece-move-best');
-        marker.dataset.pawnforgePointer = 'piece-move';
-        marker.dataset.square = target;
-        marker.dataset.category = category.key;
-        marker.style.setProperty('--pawnforge-score-color', VERDICT_COLORS[category.key]);
-        const label = document.createElement('span');
-        label.className = 'pawnforge-piece-move-label';
-        const promotion = entry.uci.length > 4 ? `=${entry.uci[4].toUpperCase()} ` : '';
-        label.textContent = `${promotion}${pieceScoreLabel(entry.cp, loss, sideToMove)}`;
-        marker.append(label);
-        pieceMarkers.push(marker);
-        if (!bestEntry || entry.cp > bestEntry.cp) bestEntry = { ...entry, target };
-      }
-      const count = byTarget.size;
-      pieceStatusEl.textContent = `${pieceName[0].toUpperCase()}${pieceName.slice(1)} on ${squareLabel(square)}: ${count} ${count === 1 ? 'move' : 'moves'}, best ${squareLabel(bestEntry.target)} (${pieceScoreLabel(bestEntry.cp, Math.max(0, clampEval(bestCp) - clampEval(bestEntry.cp)), sideToMove)}). Green is best, red is a blunder.`;
-    }
+    pieceMarkers.push(pieceMarker('pawnforge-piece-origin', 'piece-origin', square));
+    pieceStatusEl.textContent = moves === null
+      ? `Scoring the ${pieceNameAt(fen, square)} on ${squareLabel(square)}…`
+      : addPieceMoveMarkers(pieceScores);
     document.body.append(...pieceMarkers);
     updatePieceMarkerPositions();
   }
@@ -1321,20 +1334,26 @@
     }
   }
 
+  // The square under a pointer on the analysed board, or null outside it.
+  function boardSquareAt(x, y) {
+    const known = currentSnapshot?.board?.element;
+    const element = known?.isConnected ? known : findBoardModel()?.element;
+    if (!element) return null;
+    const rect = element.getBoundingClientRect();
+    const inside = x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom;
+    return inside ? squareFromPoint(rect, x, y, boardOrientation(element)) : null;
+  }
+
   // Watches for a piece being picked up or clicked on the analysed board (click-to-move and drag
   // both start with a pointerdown). The page still receives the event: the overlay only reads it.
   function onBoardPointerDown(event) {
     if (!active || !pieceScoresEnabled || event.button !== 0 || event.target?.closest?.('#pawnforge-hud')) return;
-    const known = currentSnapshot?.board?.element;
-    const element = known?.isConnected ? known : findBoardModel()?.element;
-    if (!element) return;
-    const rect = element.getBoundingClientRect();
-    if (event.clientX < rect.left || event.clientX >= rect.right || event.clientY < rect.top || event.clientY >= rect.bottom) return;
-    const square = squareFromPoint(rect, event.clientX, event.clientY, boardOrientation(element));
+    const square = boardSquareAt(event.clientX, event.clientY);
+    if (!square) return;
     // Clicking the selected piece again deselects it, as on the chess sites.
-    if (pieceScores?.square === square) { clearPieceScores(); return; }
+    if (pieceScores?.square === square) clearPieceScores();
     // The square is checked against a freshly read position, which may be newer than the last analysis.
-    void scorePieceMoves(square);
+    else void scorePieceMoves(square);
   }
 
   async function analyzePosition(force = false, { optIn = false } = {}) {

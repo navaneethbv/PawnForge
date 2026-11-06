@@ -111,7 +111,7 @@ test('unpacked extension scores a selected piece through the relay alongside the
     await page.mouse.click(6 * 50 + 25, 7 * 50 + 25);
     const markers = page.locator('[data-pawnforge-pointer="piece-move"]');
     await expect(markers).toHaveCount(2, { timeout: 25000 });
-    expect((await markers.evaluateAll((elements) => elements.map((element) => element.dataset.square))).toSorted()).toEqual(['f3', 'h3']);
+    expect((await markers.evaluateAll((elements) => elements.map((element) => element.dataset.square))).toSorted((a, b) => a.localeCompare(b))).toEqual(['f3', 'h3']);
     await expect(page.locator('#pawnforge-piece-status')).toContainText('Knight on G1: 2 moves, best F3');
     // The main analysis is still on screen: the piece request used its own relay slot.
     await expect(page.locator('#pawnforge-hud-candidates button').first()).toBeVisible();

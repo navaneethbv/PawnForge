@@ -662,7 +662,7 @@ test('real engine scores every legal move of one piece', async ({ request }) => 
   expect(knight.ok()).toBe(true);
   const { square, moves } = await knight.json();
   expect(square).toBe('g1');
-  expect(moves.map((move) => move.uci).toSorted()).toEqual(['g1f3', 'g1h3']);
+  expect(moves.map((move) => move.uci).toSorted((a, b) => a.localeCompare(b))).toEqual(['g1f3', 'g1h3']);
   for (const move of moves) expect(Number.isFinite(move.evalCp)).toBe(true);
   // A blocked piece has no moves, and anything that is not a square is rejected.
   const rook = await request.post('/api/analyze/position', { data: { fen: start, settings: { depth: 6, square: 'a1' } } });

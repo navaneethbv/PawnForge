@@ -1282,7 +1282,7 @@
     const entries = bestMovePerTarget(moves);
     if (entries.length === 0) return `The ${pieceName} on ${squareLabel(square)} has no legal moves.`;
     const sideToMove = fen.split(' ')[1];
-    const best = entries.reduce((top, entry) => (entry.cp > top.cp ? entry : top));
+    const best = entries.reduce((top, entry) => (entry.cp > top.cp ? entry : top), entries[0]);
     const referenceCp = clampEval(pieceReferenceCp(fen, best.cp));
     const lossOf = (entry) => Math.max(0, referenceCp - clampEval(entry.cp));
     for (const entry of entries) {
@@ -1307,32 +1307,38 @@
     updatePieceMarkerPositions();
   }
 
+  // Why the selected square cannot be scored right now, or null when it can. An empty string means
+  // "nothing to say": the square holds no piece of the side to move.
+  function pieceScoreBlocker(snapshot, square) {
+    if (snapshot.approximate && !approximateEl.checked) return 'Turn on approximate DOM analysis (or paste a FEN) to score piece moves on this board.';
+    const [placement, sideToMove] = snapshot.fen.split(' ');
+    if (pieceColor(placementSquares(placement).get(square)) !== sideToMove) return '';
+    if (!pieceScoresAllowed()) return 'Piece move scores are available on analysis boards, in finished games, and against bots, not in live games against people.';
+    return null;
+  }
+
+  async function fetchPieceMoves(snapshot, square, requestId) {
+    if (isExtension && !extensionContextAlive()) { shutdown(); return null; }
+    const data = await engineRequest({ fen: snapshot.fen, settings: { depth, square } }, {
+      channel: 'piece', relayId: `${instanceId}:piece:${requestId}`, controller: pieceController
+    });
+    return Array.isArray(data?.moves) ? data.moves : [];
+  }
+
   async function scorePieceMoves(square) {
     clearPieceScores();
     const requestId = pieceRequest;
     const snapshot = await detectCurrentPosition();
     if (!active || requestId !== pieceRequest || !snapshot?.fen) return;
-    if (snapshot.approximate && !approximateEl.checked) {
-      pieceStatusEl.textContent = 'Turn on approximate DOM analysis (or paste a FEN) to score piece moves on this board.';
-      return;
-    }
-    const [placement, sideToMove] = snapshot.fen.split(' ');
-    // Only the side to move has moves to score; selecting anything else just clears the markers.
-    if (pieceColor(placementSquares(placement).get(square)) !== sideToMove) return;
-    if (!pieceScoresAllowed()) {
-      pieceStatusEl.textContent = 'Piece move scores are available on analysis boards, in finished games, and against bots, not in live games against people.';
-      return;
-    }
+    const blocker = pieceScoreBlocker(snapshot, square);
+    if (blocker !== null) { pieceStatusEl.textContent = blocker; return; }
     pieceController = new AbortController();
     pieceScores = { fen: snapshot.fen, square, board: snapshot.board, moves: null };
     renderPieceScores();
     try {
-      if (isExtension && !extensionContextAlive()) { shutdown(); return; }
-      const data = await engineRequest({ fen: snapshot.fen, settings: { depth, square } }, {
-        channel: 'piece', relayId: `${instanceId}:piece:${requestId}`, controller: pieceController
-      });
-      if (!active || requestId !== pieceRequest) return;
-      pieceScores.moves = Array.isArray(data?.moves) ? data.moves : [];
+      const moves = await fetchPieceMoves(snapshot, square, requestId);
+      if (!moves || !active || requestId !== pieceRequest) return;
+      pieceScores.moves = moves;
       renderPieceScores();
     } catch (error) {
       if (isExtension && !extensionContextAlive()) { shutdown(); return; }

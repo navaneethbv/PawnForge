@@ -222,7 +222,7 @@ It can suggest moves at a rated strength (Elo 1320 to 2500), or throw the game b
 In games against people the row stays hidden and the overlay uses Coach mode, even if a vs-bot mode was chosen earlier.
 On approximate DOM positions, the throw plan reads the move number from the move list.
 **Score a piece's moves when I select it** puts a coloured score on every square a selected piece can reach (the piece's best move green, then lime good, amber inaccuracy, orange mistake, red blunder against it); **Score as** shows it for the side moving, from White's view, or as the loss against the best move.
-Piece move scores work on analysis and study boards, in finished lichess games, and against a computer, not in live games against people.
+The option starts off; turning it on shows a fair-play reminder. Piece move scores work on every site except those listed in `site-rules.json` (Chess.com and Lichess by default), where they work only on the listed learning pages and in bot games.
 Paste a complete six-field FEN for accurate analysis when the page does not expose one.
 The Side selector overrides the side to move for approximate DOM analysis; it applies to the current position only and returns to Auto detect after the next move.
 Overlay evaluations are shown from White's point of view, like the lichess and chess.com eval bars.

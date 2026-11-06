@@ -72,6 +72,16 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   }
 });
 
+// Piece move score site rules live in site-rules.json (see extension/README.md); the overlay asks for them.
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type !== 'site-rules') return undefined;
+  fetch(chrome.runtime.getURL('site-rules.json'))
+    .then((response) => response.json())
+    .then((rules) => sendResponse({ rules }))
+    .catch(() => sendResponse({ rules: null }));
+  return true;
+});
+
 // Runs in the page's MAIN world, where site objects such as chess.com's board element are visible.
 // Injected functions are serialised, so helpers must live inside this function.
 function readFenFromPage() {

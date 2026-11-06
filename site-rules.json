@@ -1,0 +1,8 @@
+{
+  "pieceScores": {
+    "blockedSites": [
+      { "domain": "chess.com", "allowPaths": ["/analysis", "/play/computer", "/game/computer"] },
+      { "domain": "lichess.org", "allowPaths": ["/analysis", "/study"] }
+    ]
+  }
+}

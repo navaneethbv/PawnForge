@@ -97,7 +97,7 @@ test('unpacked extension scores a selected piece through the relay alongside the
   try {
     const page = await context.newPage();
     // A chess.com analysis board: the position comes from the board element's game object.
-    await page.route('https://www.chess.com/analysis', route => route.fulfill({ contentType: 'text/html', body: `<!doctype html><html><body style="margin:0">
+    await page.route(/^https:\/\/www\.chess\.com\/(analysis|game\/live\/1)$/, route => route.fulfill({ contentType: 'text/html', body: `<!doctype html><html><body style="margin:0">
       <wc-chess-board style="display:block;width:400px;height:400px"></wc-chess-board>
       <script>customElements.define('wc-chess-board', class extends HTMLElement {
         constructor() { super(); this.game = { getFEN: () => 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1' }; }
@@ -107,6 +107,7 @@ test('unpacked extension scores a selected piece through the relay alongside the
     await page.locator('#pawnforge-endpoint').fill('http://127.0.0.1:4189/api/analyze/position');
     await page.locator('#pawnforge-save-endpoint').click();
     await expect(page.locator('#pawnforge-hud-candidates button').first()).toBeVisible({ timeout: 25000 });
+    await page.locator('#pawnforge-piece-scores').check();
     // g1 is the seventh file and first rank on a 400px board seen from White.
     await page.mouse.click(6 * 50 + 25, 7 * 50 + 25);
     const markers = page.locator('[data-pawnforge-pointer="piece-move"]');
@@ -115,5 +116,13 @@ test('unpacked extension scores a selected piece through the relay alongside the
     await expect(page.locator('#pawnforge-piece-status')).toContainText('Knight on G1: 2 moves, best F3');
     // The main analysis is still on screen: the piece request used its own relay slot.
     await expect(page.locator('#pawnforge-hud-candidates button').first()).toBeVisible();
+
+    // site-rules.json, read through the background worker, blocks a chess.com live game.
+    await page.goto('https://www.chess.com/game/live/1');
+    await expect(page.locator('#pawnforge-hud-candidates button').first()).toBeVisible({ timeout: 25000 });
+    await expect(page.locator('#pawnforge-piece-scores')).toBeChecked();
+    await page.mouse.click(6 * 50 + 25, 7 * 50 + 25);
+    await expect(page.locator('#pawnforge-piece-status')).toHaveText('Piece move scores are off on this page.');
+    await expect(markers).toHaveCount(0);
   } finally { await context.close(); }
 });

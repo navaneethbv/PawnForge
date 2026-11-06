@@ -563,6 +563,14 @@ function squareCentre(square) {
   return { x: (square.charCodeAt(0) - 97) * 60 + 30, y: (8 - Number(square[1])) * 60 + 30 };
 }
 
+// Injects the overlay with the real site-rules.json and turns piece move scores on.
+async function injectWithPieceScores(page) {
+  const rules = JSON.parse(await readFile('site-rules.json', 'utf8'));
+  await page.evaluate((value) => { window.__PAWNFORGE_SITE_RULES__ = value; }, rules);
+  await injectOverlay(page);
+  await page.locator('#pawnforge-piece-scores').check();
+}
+
 async function selectSquare(page, square) {
   const { x, y } = squareCentre(square);
   await page.mouse.click(x, y);
@@ -579,7 +587,7 @@ test('selecting a piece on an analysis board scores every move it can make', asy
   const requests = await routePieceScores(page, knightMoves);
   await openSiteUrl(page, 'http://lichess.org/analysis');
   await chessComFixture(page);
-  await injectOverlay(page);
+  await injectWithPieceScores(page);
   await page.locator('#pawnforge-approximate').check();
   await expect(page.locator('#pawnforge-hud-candidates button').first()).toBeVisible();
 
@@ -626,7 +634,7 @@ test('promotions keep the best piece for each square', async ({ page }) => {
   ]);
   await openSiteUrl(page, 'http://lichess.org/analysis');
   await page.setContent('<!doctype html><body><div class="board" style="position:relative;width:480px;height:480px"></div></body>');
-  await injectOverlay(page);
+  await injectWithPieceScores(page);
   await page.locator('#pawnforge-fen').fill('4k3/8/8/8/8/8/1p6/4K3 b - - 0 1');
   await page.locator('#pawnforge-use-fen').click();
   await expect(page.locator('#pawnforge-hud-candidates button').first()).toBeVisible();
@@ -639,31 +647,58 @@ test('promotions keep the best piece for each square', async ({ page }) => {
   await expect(page.locator('[data-pawnforge-pointer="piece-move"]')).toHaveText(['=Q +6.00']);
 });
 
-test('piece move scores stay off in live games against people and when the option is off', async ({ page }) => {
+test('site rules block piece scores on listed sites except their allowed pages and bot games', async ({ page }) => {
   const requests = await routePieceScores(page, knightMoves);
+  const pieceRequests = () => requests.filter((body) => body.settings?.square);
+  // chess.com is listed in site-rules.json, and a live game is not one of its allowed pages.
   await openSiteUrl(page, 'http://www.chess.com/game/live/123');
   await chessComFixture(page);
-  await injectOverlay(page);
+  await injectWithPieceScores(page);
   await page.locator('#pawnforge-approximate').check();
   await expect(page.locator('#pawnforge-hud-candidates button').first()).toBeVisible();
   await selectSquare(page, 'd7');
-  await expect(page.locator('#pawnforge-piece-status')).toContainText('not in live games against people');
+  await expect(page.locator('#pawnforge-piece-status')).toHaveText('Piece move scores are off on this page.');
   await expect(page.locator('[data-pawnforge-pointer^="piece"]')).toHaveCount(0);
-  expect(requests.filter((body) => body.settings?.square)).toEqual([]);
+  expect(pieceRequests()).toEqual([]);
 
-  // In a game against the computer the same click is scored, unless the option is turned off.
+  // Its computer games are on the allowed list, so the same click is scored there.
   await openSiteUrl(page, 'http://www.chess.com/play/computer');
   await chessComFixture(page);
+  await injectWithPieceScores(page);
+  await page.locator('#pawnforge-approximate').check();
+  await expect(page.locator('#pawnforge-hud-candidates button').first()).toBeVisible();
+  await selectSquare(page, 'd7');
+  await expect(page.locator('[data-pawnforge-pointer="piece-move"]')).toHaveCount(4);
+
+  // A site that is not listed allows piece scores on every page.
+  await openSiteUrl(page, 'http://chess-club.example/game/42');
+  await chessComFixture(page);
+  await injectWithPieceScores(page);
+  await page.locator('#pawnforge-approximate').check();
+  await expect(page.locator('#pawnforge-hud-candidates button').first()).toBeVisible();
+  await selectSquare(page, 'd7');
+  await expect(page.locator('[data-pawnforge-pointer="piece-move"]')).toHaveCount(4);
+});
+
+test('piece scores start off, show the fair-play notice when turned on, and stay off without site rules', async ({ page }) => {
+  const requests = await routePieceScores(page, knightMoves);
+  const pieceRequests = () => requests.filter((body) => body.settings?.square);
+  await openSiteUrl(page, 'http://chess-club.example/analysis');
+  await chessComFixture(page);
+  // No site rules: the overlay cannot tell which sites are blocked, so it allows none.
   await injectOverlay(page);
   await page.locator('#pawnforge-approximate').check();
   await expect(page.locator('#pawnforge-hud-candidates button').first()).toBeVisible();
-  await page.locator('#pawnforge-piece-scores').uncheck();
+  await expect(page.locator('#pawnforge-piece-scores')).not.toBeChecked();
   await selectSquare(page, 'd7');
   await page.waitForTimeout(300);
-  expect(requests.filter((body) => body.settings?.square)).toEqual([]);
+  expect(pieceRequests()).toEqual([]);
+
   await page.locator('#pawnforge-piece-scores').check();
+  await expect(page.locator('#pawnforge-piece-status')).toContainText('Using engine help in live games against people is cheating');
   await selectSquare(page, 'd7');
-  await expect(page.locator('[data-pawnforge-pointer="piece-move"]')).toHaveCount(4);
+  await expect(page.locator('#pawnforge-piece-status')).toHaveText('Piece move scores are off on this page.');
+  expect(pieceRequests()).toEqual([]);
 });
 
 test("a piece's best move is green even when another piece has a better move", async ({ page }) => {
@@ -671,7 +706,7 @@ test("a piece's best move is green even when another piece has a better move", a
   await routePieceScores(page, knightMoves.slice(0, 2), { bestCp: 140 });
   await openSiteUrl(page, 'http://lichess.org/analysis');
   await chessComFixture(page);
-  await injectOverlay(page);
+  await injectWithPieceScores(page);
   await page.locator('#pawnforge-approximate').check();
   await expect(page.locator('#pawnforge-hud-candidates button').first()).toBeVisible();
   await selectSquare(page, 'd7');

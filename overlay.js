@@ -73,7 +73,10 @@
   let verdictMarker = null;
   // Piece move scores: when a piece is selected, every legal move it has is scored on the board.
   const PIECE_SCORE_FORMATS = ['mover', 'white', 'loss'];
-  let pieceScoresEnabled = true;
+  // Off until the user turns it on, which shows the fair-play notice.
+  let pieceScoresEnabled = false;
+  // Sites where piece scores are blocked, from site-rules.json; null until loaded.
+  let siteRules = null;
   let pieceScoreFormat = 'mover';
   // { fen, square, board, moves } for the selected piece; moves is null while the engine works.
   let pieceScores = null;
@@ -391,7 +394,7 @@
           <option value="20">20 (strongest)</option>
         </select>
       </div>
-      <label title="Select one of your pieces on the board to score every move it can make"><input id="pawnforge-piece-scores" type="checkbox" checked /> Score a piece's moves when I select it</label>
+      <label title="Select one of your pieces on the board to score every move it can make"><input id="pawnforge-piece-scores" type="checkbox" /> Score a piece's moves when I select it</label>
       <div class="pawnforge-control-row">
         <label for="pawnforge-piece-format">Score as</label>
         <select id="pawnforge-piece-format" aria-label="How piece move scores are shown">
@@ -1214,13 +1217,31 @@
     return data;
   }
 
-  // Piece move scores are engine help, so they are offered only where that is fair play: analysis
-  // and study boards, finished lichess games, and games against a computer. Live games against
-  // people are excluded.
+  // Site rules come from site-rules.json through the extension; a page script (tests, bookmarklet)
+  // can supply the same object as window.__PAWNFORGE_SITE_RULES__.
+  async function loadSiteRules() {
+    let rules = root.__PAWNFORGE_SITE_RULES__ ?? null;
+    if (!rules && isExtension && extensionContextAlive()) {
+      try {
+        rules = (await extensionRuntime.sendMessage({ type: 'site-rules' }))?.rules ?? null;
+      } catch (_error) { rules = null; }
+    }
+    const sites = rules?.pieceScores?.blockedSites;
+    siteRules = Array.isArray(sites) ? sites.filter((site) => typeof site?.domain === 'string') : null;
+  }
+
+  const pathAllowed = (path, allowed) => path === allowed || path.startsWith(allowed.endsWith('/') ? allowed : `${allowed}/`);
+
+  // Piece move scores work on every site except those listed in site-rules.json. On a listed site
+  // they still work on its allowPaths pages (analysis boards, computer games) and in bot games.
+  // Without loaded rules they stay off rather than guess.
   function pieceScoresAllowed() {
-    if (isBotGame()) return true;
-    if (/(^|\/)(analysis|study)(\/|$)/.test(location.pathname)) return true;
-    return /(^|\.)lichess\.org$/.test(location.hostname) && Boolean(document.querySelector('.result-wrap'));
+    if (!siteRules) return false;
+    const host = location.hostname.toLowerCase();
+    const site = siteRules.find(({ domain }) => host === domain || host.endsWith(`.${domain}`));
+    if (!site) return true;
+    if ((site.allowPaths ?? []).some((allowed) => pathAllowed(location.pathname, allowed))) return true;
+    return isBotGame();
   }
 
   const squareLabel = (square) => square.toUpperCase();
@@ -1230,6 +1251,8 @@
     if (pieceScoreFormat === 'loss') return loss === 0 ? '0.0' : `−${(loss / 100).toFixed(1)}`;
     return formatEvaluation(pieceScoreFormat === 'white' ? whiteView(cp, sideToMove) : cp);
   }
+
+  const FAIR_PLAY_NOTICE = 'Piece move scores are for learning: use them on analysis boards and against bots. Using engine help in live games against people is cheating and breaks chess sites\' rules.';
 
   // One entry per destination square; promotions reach a square several ways, so keep the best.
   function bestMovePerTarget(moves) {
@@ -1313,7 +1336,7 @@
     if (snapshot.approximate && !approximateEl.checked) return 'Turn on approximate DOM analysis (or paste a FEN) to score piece moves on this board.';
     const [placement, sideToMove] = snapshot.fen.split(' ');
     if (pieceColor(placementSquares(placement).get(square)) !== sideToMove) return '';
-    if (!pieceScoresAllowed()) return 'Piece move scores are available on analysis boards, in finished games, and against bots, not in live games against people.';
+    if (!pieceScoresAllowed()) return 'Piece move scores are off on this page.';
     return null;
   }
 
@@ -1687,7 +1710,8 @@
     pieceScoresEnabled = pieceScoresEl.checked;
     editedSettings.add('pieceScores');
     persistSettings();
-    if (!pieceScoresEnabled) clearPieceScores();
+    clearPieceScores();
+    if (pieceScoresEnabled) pieceStatusEl.textContent = FAIR_PLAY_NOTICE;
   });
   pieceFormatEl.addEventListener('change', () => {
     if (!PIECE_SCORE_FORMATS.includes(pieceFormatEl.value)) return;
@@ -1755,6 +1779,7 @@
     });
   }
 
+  void loadSiteRules();
   void loadSettings().finally(() => { void analyzePosition(true); });
   pollTimer = window.setInterval(() => {
     if (!hud.isConnected || (isExtension && !extensionContextAlive())) shutdown();

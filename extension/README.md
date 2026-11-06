@@ -46,8 +46,30 @@ When another piece has a clearly better move, the status line says how much more
 Promotions show the best piece for each square (for example `=Q +6.00`).
 **Score as** chooses the number: the evaluation for the side moving (+ is good), the evaluation from White's view, or the loss against the best move in the position (0 is best).
 Clicking the piece again, an empty square, or an opponent's piece clears the markers, and so does the next move.
-Piece move scores work on analysis and study boards (any page whose path contains `/analysis` or `/study`), in finished lichess games, and in games against a computer.
-In live games against people the overlay shows a note instead of scores.
+The option starts off. Turning it on shows a reminder that it is for learning on analysis boards and against bots, and that engine help in live games against people is cheating.
+
+### Site rules for piece move scores
+
+Piece move scores work on every site the overlay runs on, except the sites listed in `site-rules.json` at the repository root:
+
+```json
+{
+  "pieceScores": {
+    "blockedSites": [
+      { "domain": "chess.com", "allowPaths": ["/analysis", "/play/computer", "/game/computer"] },
+      { "domain": "lichess.org", "allowPaths": ["/analysis", "/study"] }
+    ]
+  }
+}
+```
+
+- `domain` blocks that site and all its subdomains (`chess.com` also covers `www.chess.com`).
+- `allowPaths` lists pages on a blocked site where piece scores still work: a path matches itself and anything below it (`/analysis` covers `/analysis/game/123`). Leave it out to block the whole site.
+- Games against a computer that the overlay recognises (see **Vs bot**) also stay allowed on a blocked site.
+- On a blocked page the status line says "Piece move scores are off on this page."
+
+To block another site, add an entry and reload the extension at `chrome://extensions`. `npm run check:extension` checks the file's format.
+`site-rules.json` only decides where piece scores work. The overlay itself loads on the domains in `manifest.json` (`host_permissions` and `content_scripts.matches`) and in the toolbar check in `background.js`; to run the overlay on a new site, add it there too.
 The search uses the Depth setting, capped at 16 so a queen's 27 moves still return quickly.
 The Depth selector sets the engine search depth (8, 12, 16 or 20); changing it starts a fresh blunder-detector history because evaluations from different depths are not comparable.
 

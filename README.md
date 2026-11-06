@@ -74,7 +74,7 @@ Node.js HTTP Server (server.js)
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/analyze/position` | POST | Analyze position with MultiPV |
+| `/api/analyze/position` | POST | Analyze position with MultiPV, or with `settings.square` score every legal move of the piece on that square |
 | `/api/analyze/all-moves` | POST | Stream eval for every legal move (SSE) |
 | `/api/analyze/game` | POST | Full game review from PGN |
 | `/api/play/move` | POST | Engine reply for play mode (`mode`: `elo` with `elo`, `full`, or `lose` with `loseBy`/`moveNumber`) |
@@ -221,6 +221,8 @@ The overlay lists the engine's five best moves, best first, and the minimize but
 It can suggest moves at a rated strength (Elo 1320 to 2500), or throw the game by about move 25, 30, 40, or 50 using the same plan as the app's **Throw the game** mode.
 In games against people the row stays hidden and the overlay uses Coach mode, even if a vs-bot mode was chosen earlier.
 On approximate DOM positions, the throw plan reads the move number from the move list.
+**Score a piece's moves when I select it** puts a coloured score on every square a selected piece can reach (green best, amber inaccuracy, orange mistake, red blunder); **Score as** shows it for the side moving, from White's view, or as the loss against the best move.
+Piece move scores work on analysis and study boards, in finished lichess games, and against a computer, not in live games against people.
 Paste a complete six-field FEN for accurate analysis when the page does not expose one.
 The Side selector overrides the side to move for approximate DOM analysis; it applies to the current position only and returns to Auto detect after the next move.
 Overlay evaluations are shown from White's point of view, like the lichess and chess.com eval bars.

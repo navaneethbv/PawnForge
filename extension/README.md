@@ -40,6 +40,14 @@ It can suggest moves at a rated strength (Elo 1320 to 2500), or throw the game b
 In games against people the row stays hidden and the overlay uses Coach mode, even if a vs-bot mode was chosen earlier.
 On approximate DOM positions, the throw plan reads the move number from the move list.
 These settings are remembered.
+**Score a piece's moves when I select it** scores every legal move of a piece you click or pick up on the board.
+Each square the piece can reach gets a marker with its score, coloured like the move verdicts: green for the best and good moves, amber for an inaccuracy, orange for a mistake, red for a blunder.
+Promotions show the best piece for each square (for example `=Q +6.00`).
+**Score as** chooses the number: the evaluation for the side moving (+ is good), the evaluation from White's view, or the loss against the best move in the position (0 is best).
+Clicking the piece again, an empty square, or an opponent's piece clears the markers, and so does the next move.
+Piece move scores work on analysis and study boards (any page whose path contains `/analysis` or `/study`), in finished lichess games, and in games against a computer.
+In live games against people the overlay shows a note instead of scores.
+The search uses the Depth setting, capped at 16 so a queen's 27 moves still return quickly.
 The Depth selector sets the engine search depth (8, 12, 16 or 20); changing it starts a fresh blunder-detector history because evaluations from different depths are not comparable.
 
 The overlay can render red origin and destination pointers over any visible square-based or DOM-backed chessboard.

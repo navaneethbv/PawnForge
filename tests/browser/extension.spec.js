@@ -87,3 +87,33 @@ test('automatic injection is limited to the supported chess domains', async () =
     expect(permissions.origins).not.toContain('https://*/*');
   } finally { await context.close(); }
 });
+
+test('unpacked extension scores a selected piece through the relay alongside the main analysis', async () => {
+  const extension = resolve('.');
+  const context = await chromium.launchPersistentContext('', {
+    channel: 'chromium', headless: true,
+    args: [`--disable-extensions-except=${extension}`, `--load-extension=${extension}`]
+  });
+  try {
+    const page = await context.newPage();
+    // A chess.com analysis board: the position comes from the board element's game object.
+    await page.route('https://www.chess.com/analysis', route => route.fulfill({ contentType: 'text/html', body: `<!doctype html><html><body style="margin:0">
+      <wc-chess-board style="display:block;width:400px;height:400px"></wc-chess-board>
+      <script>customElements.define('wc-chess-board', class extends HTMLElement {
+        constructor() { super(); this.game = { getFEN: () => 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1' }; }
+      });</script></body></html>` }));
+    await page.goto('https://www.chess.com/analysis');
+    await expect(page.locator('#pawnforge-hud')).toBeVisible();
+    await page.locator('#pawnforge-endpoint').fill('http://127.0.0.1:4189/api/analyze/position');
+    await page.locator('#pawnforge-save-endpoint').click();
+    await expect(page.locator('#pawnforge-hud-candidates button').first()).toBeVisible({ timeout: 25000 });
+    // g1 is the seventh file and first rank on a 400px board seen from White.
+    await page.mouse.click(6 * 50 + 25, 7 * 50 + 25);
+    const markers = page.locator('[data-pawnforge-pointer="piece-move"]');
+    await expect(markers).toHaveCount(2, { timeout: 25000 });
+    expect((await markers.evaluateAll((elements) => elements.map((element) => element.dataset.square))).toSorted()).toEqual(['f3', 'h3']);
+    await expect(page.locator('#pawnforge-piece-status')).toContainText('Knight on G1: 2 moves, best F3');
+    // The main analysis is still on screen: the piece request used its own relay slot.
+    await expect(page.locator('#pawnforge-hud-candidates button').first()).toBeVisible();
+  } finally { await context.close(); }
+});

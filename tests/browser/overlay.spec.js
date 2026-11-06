@@ -545,3 +545,123 @@ test('lichess games against the Stockfish AI or a BOT account count as bot games
     await expect(page.locator('#pawnforge-bot-row')).toBeVisible({ visible });
   }
 });
+
+// Answers piece-move requests (settings.square) with `pieceMoves`, and the main analysis with one line.
+async function routePieceScores(page, pieceMoves) {
+  const requests = [];
+  await page.route('**/api/analyze/position', async (route) => {
+    const body = route.request().postDataJSON();
+    requests.push(body);
+    if (body.settings?.square) await route.fulfill({ json: { fen: body.fen, square: body.settings.square, moves: pieceMoves } });
+    else await route.fulfill({ json: { topMoves: [{ uci: 'd7b6', evalCp: -10, pv: 'd7b6' }] } });
+  });
+  return requests;
+}
+
+// Centre of a square on the 480px chess.com fixture board, seen from White.
+function squareCentre(square) {
+  return { x: (square.charCodeAt(0) - 97) * 60 + 30, y: (8 - Number(square[1])) * 60 + 30 };
+}
+
+async function selectSquare(page, square) {
+  const { x, y } = squareCentre(square);
+  await page.mouse.click(x, y);
+}
+
+const knightMoves = [
+  { uci: 'd7b6', evalCp: -10, pv: 'd7b6' },
+  { uci: 'd7f6', evalCp: -60, pv: 'd7f6' },
+  { uci: 'd7b8', evalCp: -120, pv: 'd7b8' },
+  { uci: 'd7e5', evalCp: -480, pv: 'd7e5' }
+];
+
+test('selecting a piece on an analysis board scores every move it can make', async ({ page }) => {
+  const requests = await routePieceScores(page, knightMoves);
+  await openSiteUrl(page, 'http://lichess.org/analysis');
+  await chessComFixture(page);
+  await injectOverlay(page);
+  await page.locator('#pawnforge-approximate').check();
+  await expect(page.locator('#pawnforge-hud-candidates button').first()).toBeVisible();
+
+  await selectSquare(page, 'd7');
+  const markers = page.locator('[data-pawnforge-pointer="piece-move"]');
+  await expect(markers).toHaveCount(4);
+  const pieceRequest = requests.find((body) => body.settings?.square);
+  expect(pieceRequest).toEqual({ fen: blackToMove, settings: { depth: 8, square: 'd7' } });
+  await expect(page.locator('[data-pawnforge-pointer="piece-origin"]')).toHaveAttribute('data-square', 'd7');
+
+  // Scores are for the side moving by default; categories follow the loss against the best move.
+  const scores = await markers.evaluateAll((elements) => elements.map((element) => [element.dataset.square, element.dataset.category, element.textContent]));
+  expect(scores).toEqual([
+    ['b6', 'best', '-0.10'],
+    ['f6', 'good', '-0.60'],
+    ['b8', 'inaccuracy', '-1.20'],
+    ['e5', 'blunder', '-4.80']
+  ]);
+  await expect(page.locator('#pawnforge-piece-status')).toContainText('Knight on D7: 4 moves, best B6');
+  // Each marker sits on its own square.
+  const b6 = await page.locator('[data-pawnforge-pointer="piece-move"][data-square="b6"]').boundingBox();
+  expect(b6.x).toBeCloseTo(62, 0);
+  expect(b6.y).toBeCloseTo(122, 0);
+
+  await page.locator('#pawnforge-piece-format').selectOption('white');
+  await expect(markers.first()).toHaveText('+0.10');
+  await page.locator('#pawnforge-piece-format').selectOption('loss');
+  expect(await markers.allTextContents()).toEqual(['0.0', '−0.5', '−1.1', '−4.7']);
+  expect(requests.filter((body) => body.settings?.square)).toHaveLength(1);
+
+  // Clicking an empty square, or the selected piece again, clears the scores.
+  await selectSquare(page, 'd6');
+  await expect(markers).toHaveCount(0);
+  await selectSquare(page, 'd7');
+  await expect(markers).toHaveCount(4);
+  await selectSquare(page, 'd7');
+  await expect(markers).toHaveCount(0);
+});
+
+test('promotions keep the best piece for each square', async ({ page }) => {
+  await routePieceScores(page, [
+    { uci: 'b2b1q', evalCp: 600, pv: 'b2b1q' },
+    { uci: 'b2b1n', evalCp: -5, pv: 'b2b1n' }
+  ]);
+  await openSiteUrl(page, 'http://lichess.org/analysis');
+  await page.setContent('<!doctype html><body><div class="board" style="position:relative;width:480px;height:480px"></div></body>');
+  await injectOverlay(page);
+  await page.locator('#pawnforge-fen').fill('4k3/8/8/8/8/8/1p6/4K3 b - - 0 1');
+  await page.locator('#pawnforge-use-fen').click();
+  await expect(page.locator('#pawnforge-hud-candidates button').first()).toBeVisible();
+  await page.evaluate(() => {
+    // The FEN supplies the position; the overlay still needs a visible board for its markers.
+    const board = document.querySelector('.board');
+    board.innerHTML = '<div class="piece bp square-22" style="position:absolute;left:60px;top:360px;width:60px;height:60px"></div><div class="piece bk square-58"></div><div class="piece wk square-51"></div>';
+  });
+  await selectSquare(page, 'b2');
+  await expect(page.locator('[data-pawnforge-pointer="piece-move"]')).toHaveText(['=Q +6.00']);
+});
+
+test('piece move scores stay off in live games against people and when the option is off', async ({ page }) => {
+  const requests = await routePieceScores(page, knightMoves);
+  await openSiteUrl(page, 'http://www.chess.com/game/live/123');
+  await chessComFixture(page);
+  await injectOverlay(page);
+  await page.locator('#pawnforge-approximate').check();
+  await expect(page.locator('#pawnforge-hud-candidates button').first()).toBeVisible();
+  await selectSquare(page, 'd7');
+  await expect(page.locator('#pawnforge-piece-status')).toContainText('not in live games against people');
+  await expect(page.locator('[data-pawnforge-pointer^="piece"]')).toHaveCount(0);
+  expect(requests.filter((body) => body.settings?.square)).toEqual([]);
+
+  // In a game against the computer the same click is scored, unless the option is turned off.
+  await openSiteUrl(page, 'http://www.chess.com/play/computer');
+  await chessComFixture(page);
+  await injectOverlay(page);
+  await page.locator('#pawnforge-approximate').check();
+  await expect(page.locator('#pawnforge-hud-candidates button').first()).toBeVisible();
+  await page.locator('#pawnforge-piece-scores').uncheck();
+  await selectSquare(page, 'd7');
+  await page.waitForTimeout(300);
+  expect(requests.filter((body) => body.settings?.square)).toEqual([]);
+  await page.locator('#pawnforge-piece-scores').check();
+  await selectSquare(page, 'd7');
+  await expect(page.locator('[data-pawnforge-pointer="piece-move"]')).toHaveCount(4);
+});

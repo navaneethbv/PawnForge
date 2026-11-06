@@ -71,6 +71,15 @@
   // The last analysed position, kept so the next one can be judged as the move that followed it.
   let previousAnalysis = null;
   let verdictMarker = null;
+  // Piece move scores: when a piece is selected, every legal move it has is scored on the board.
+  const PIECE_SCORE_FORMATS = ['mover', 'white', 'loss'];
+  let pieceScoresEnabled = true;
+  let pieceScoreFormat = 'mover';
+  // { fen, square, board, moves } for the selected piece; moves is null while the engine works.
+  let pieceScores = null;
+  let pieceMarkers = [];
+  let pieceRequest = 0;
+  let pieceController = null;
 
   // A position must read the same on two consecutive polls before it is analysed, which skips
   // mid-animation frames while keeping move-to-analysis latency well under half a second.
@@ -288,6 +297,30 @@
       background: rgba(239, 68, 68, 0.38);
       box-shadow: 0 0 18px rgba(239, 68, 68, 0.9), inset 0 0 12px rgba(239, 68, 68, 0.34);
     }
+    .pawnforge-piece-origin {
+      border: 3px dashed #38bdf8;
+      border-radius: 8px;
+      background: rgba(56, 189, 248, 0.16);
+    }
+    .pawnforge-piece-move {
+      display: flex;
+      align-items: flex-start;
+      justify-content: flex-end;
+      border: 3px solid var(--pawnforge-score-color, #4ade80);
+      border-radius: 8px;
+      background: color-mix(in srgb, var(--pawnforge-score-color, #4ade80) 24%, transparent);
+    }
+    .pawnforge-piece-move-label {
+      margin: 2px;
+      border-radius: 4px;
+      padding: 1px 4px;
+      background: var(--pawnforge-score-color, #4ade80);
+      color: #0f172a;
+      font: 700 11px/1.3 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+    .pawnforge-piece-move-best { box-shadow: 0 0 14px var(--pawnforge-score-color, #4ade80); }
     @keyframes pawnforge-pulse {
       from { transform: scale(0.96); opacity: 0.78; }
       to { transform: scale(1.04); opacity: 1; }
@@ -358,6 +391,16 @@
           <option value="20">20 (strongest)</option>
         </select>
       </div>
+      <label title="Select one of your pieces on the board to score every move it can make"><input id="pawnforge-piece-scores" type="checkbox" checked /> Score a piece's moves when I select it</label>
+      <div class="pawnforge-control-row">
+        <label for="pawnforge-piece-format">Score as</label>
+        <select id="pawnforge-piece-format" aria-label="How piece move scores are shown">
+          <option value="mover">For the side moving (+ is good)</option>
+          <option value="white">From White's view</option>
+          <option value="loss">Loss vs best move (0 is best)</option>
+        </select>
+      </div>
+      <div class="pawnforge-hint" id="pawnforge-piece-status" role="status" aria-live="polite"></div>
       <div class="pawnforge-control-row">
         <label for="pawnforge-fen">FEN</label>
         <input id="pawnforge-fen" type="text" autocomplete="off" spellcheck="false" placeholder="Optional position FEN" aria-label="Optional position FEN" />
@@ -391,6 +434,9 @@
   const botModeEl = hud.querySelector('#pawnforge-bot-mode');
   const minimizeEl = hud.querySelector('#pawnforge-minimize');
   const miniSummaryEl = hud.querySelector('#pawnforge-mini-summary');
+  const pieceScoresEl = hud.querySelector('#pawnforge-piece-scores');
+  const pieceFormatEl = hud.querySelector('#pawnforge-piece-format');
+  const pieceStatusEl = hud.querySelector('#pawnforge-piece-status');
   endpointEl.value = endpoint;
 
   function setMessage(text) {
@@ -420,6 +466,23 @@
     miniSummaryEl.textContent = '';
     removePointers();
     clearVerdict();
+    // A selected piece's scores stay while the main analysis of that same position starts.
+    if (pieceScores?.fen !== currentSnapshot?.fen) clearPieceScores();
+  }
+
+  function removePieceMarkers() {
+    pieceMarkers.forEach((element) => element.remove());
+    pieceMarkers = [];
+  }
+
+  // Drops the selected piece's scores and cancels a search still running for them.
+  function clearPieceScores() {
+    pieceRequest += 1;
+    pieceController?.abort();
+    pieceController = null;
+    pieceScores = null;
+    removePieceMarkers();
+    pieceStatusEl.textContent = '';
   }
 
   function isFenLike(value) {
@@ -770,7 +833,19 @@
     element.style.height = `${Math.max(0, rect.height - 4)}px`;
   }
 
+  function updatePieceMarkerPositions() {
+    const element = pieceScores?.board?.element;
+    if (!pieceMarkers.length || !element) return;
+    if (!element.isConnected) { clearPieceScores(); return; }
+    const board = { element, rect: element.getBoundingClientRect(), orientation: boardOrientation(element) };
+    for (const marker of pieceMarkers) {
+      const rect = squareRect(board, marker.dataset.square);
+      if (rect) placeOnSquare(marker, rect);
+    }
+  }
+
   function updatePointerPositions() {
+    updatePieceMarkerPositions();
     if (!pointerMove && !verdictMarker) return;
     const element = currentSnapshot?.board?.element;
     if (!element?.isConnected) { removePointers(); return; }
@@ -1117,6 +1192,151 @@
     return snapshot.fen.split(' ')[1] === 'w' ? last + 1 : last;
   }
 
+  // Sends one engine request, through the extension relay when running as an extension. Each
+  // channel has its own relay slot, so piece move scores never cancel the main analysis.
+  async function engineRequest(payload, { channel, relayId, controller, directUrl = endpoint, directBody = payload }) {
+    if (isExtension) {
+      controller.signal.addEventListener('abort', () => {
+        try {
+          extensionRuntime.sendMessage({ type: 'cancel-analysis', channel, requestId: relayId }).catch(() => {});
+        } catch (_error) { /* An orphaned extension has no relay left to cancel. */ }
+      }, { once: true });
+      const result = await extensionRuntime.sendMessage({ type: 'analyze-position', channel, requestId: relayId, endpoint, payload });
+      if (result?.error) throw new Error(result.error);
+      return result.data;
+    }
+    const response = await fetch(directUrl, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(directBody), signal: controller.signal
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || `Engine returned HTTP ${response.status}`);
+    return data;
+  }
+
+  // Piece move scores are engine help, so they are offered only where that is fair play: analysis
+  // and study boards, finished lichess games, and games against a computer. Live games against
+  // people are excluded.
+  function pieceScoresAllowed() {
+    if (isBotGame()) return true;
+    if (/(^|\/)(analysis|study)(\/|$)/.test(location.pathname)) return true;
+    return /(^|\.)lichess\.org$/.test(location.hostname) && Boolean(document.querySelector('.result-wrap'));
+  }
+
+  const squareLabel = (square) => square.toUpperCase();
+
+  // The score shown on a destination square, in the chosen format. `cp` is from the mover's view.
+  function pieceScoreLabel(cp, loss, sideToMove) {
+    if (pieceScoreFormat === 'loss') return loss === 0 ? '0.0' : `−${(loss / 100).toFixed(1)}`;
+    return formatEvaluation(pieceScoreFormat === 'white' ? whiteView(cp, sideToMove) : cp);
+  }
+
+  function renderPieceScores() {
+    removePieceMarkers();
+    if (!pieceScores) return;
+    const { fen, square, moves } = pieceScores;
+    const sideToMove = fen.split(' ')[1];
+    const pieceName = pieceNameAt(fen, square);
+    const origin = document.createElement('div');
+    origin.className = 'pawnforge-pointer pawnforge-piece-origin';
+    origin.dataset.pawnforgePointer = 'piece-origin';
+    origin.dataset.square = square;
+    pieceMarkers.push(origin);
+    if (moves === null) {
+      pieceStatusEl.textContent = `Scoring the ${pieceName} on ${squareLabel(square)}…`;
+    } else if (moves.length === 0) {
+      pieceStatusEl.textContent = `The ${pieceName} on ${squareLabel(square)} has no legal moves.`;
+    } else {
+      // Promotions reach one square several ways; keep the best of them for that square.
+      const byTarget = new Map();
+      for (const move of moves) {
+        const cp = Number(move.evalCp);
+        if (typeof move.uci !== 'string' || !Number.isFinite(cp)) continue;
+        const target = move.uci.slice(2, 4);
+        if (!byTarget.has(target) || cp > byTarget.get(target).cp) byTarget.set(target, { uci: move.uci, cp });
+      }
+      // Losses are measured against the position's best move when the main analysis has it.
+      const pieceBest = Math.max(...[...byTarget.values()].map((entry) => entry.cp));
+      const positionBest = previousAnalysis?.fen === fen ? Number(previousAnalysis.topMoves[0]?.evalCp) : Number.NaN;
+      const bestCp = Number.isFinite(positionBest) ? Math.max(positionBest, pieceBest) : pieceBest;
+      let bestEntry = null;
+      for (const [target, entry] of byTarget) {
+        const loss = Math.max(0, clampEval(bestCp) - clampEval(entry.cp));
+        const category = classifyLoss(loss);
+        const marker = document.createElement('div');
+        marker.className = 'pawnforge-pointer pawnforge-piece-move';
+        if (entry.cp === pieceBest) marker.classList.add('pawnforge-piece-move-best');
+        marker.dataset.pawnforgePointer = 'piece-move';
+        marker.dataset.square = target;
+        marker.dataset.category = category.key;
+        marker.style.setProperty('--pawnforge-score-color', VERDICT_COLORS[category.key]);
+        const label = document.createElement('span');
+        label.className = 'pawnforge-piece-move-label';
+        const promotion = entry.uci.length > 4 ? `=${entry.uci[4].toUpperCase()} ` : '';
+        label.textContent = `${promotion}${pieceScoreLabel(entry.cp, loss, sideToMove)}`;
+        marker.append(label);
+        pieceMarkers.push(marker);
+        if (!bestEntry || entry.cp > bestEntry.cp) bestEntry = { ...entry, target };
+      }
+      const count = byTarget.size;
+      pieceStatusEl.textContent = `${pieceName[0].toUpperCase()}${pieceName.slice(1)} on ${squareLabel(square)}: ${count} ${count === 1 ? 'move' : 'moves'}, best ${squareLabel(bestEntry.target)} (${pieceScoreLabel(bestEntry.cp, Math.max(0, clampEval(bestCp) - clampEval(bestEntry.cp)), sideToMove)}). Green is best, red is a blunder.`;
+    }
+    document.body.append(...pieceMarkers);
+    updatePieceMarkerPositions();
+  }
+
+  async function scorePieceMoves(square) {
+    clearPieceScores();
+    const requestId = pieceRequest;
+    const snapshot = await detectCurrentPosition();
+    if (!active || requestId !== pieceRequest || !snapshot?.fen) return;
+    if (snapshot.approximate && !approximateEl.checked) {
+      pieceStatusEl.textContent = 'Turn on approximate DOM analysis (or paste a FEN) to score piece moves on this board.';
+      return;
+    }
+    const [placement, sideToMove] = snapshot.fen.split(' ');
+    // Only the side to move has moves to score; selecting anything else just clears the markers.
+    if (pieceColor(placementSquares(placement).get(square)) !== sideToMove) return;
+    if (!pieceScoresAllowed()) {
+      pieceStatusEl.textContent = 'Piece move scores are available on analysis boards, in finished games, and against bots, not in live games against people.';
+      return;
+    }
+    pieceController = new AbortController();
+    pieceScores = { fen: snapshot.fen, square, board: snapshot.board, moves: null };
+    renderPieceScores();
+    try {
+      if (isExtension && !extensionContextAlive()) { shutdown(); return; }
+      const data = await engineRequest({ fen: snapshot.fen, settings: { depth, square } }, {
+        channel: 'piece', relayId: `${instanceId}:piece:${requestId}`, controller: pieceController
+      });
+      if (!active || requestId !== pieceRequest) return;
+      pieceScores.moves = Array.isArray(data?.moves) ? data.moves : [];
+      renderPieceScores();
+    } catch (error) {
+      if (isExtension && !extensionContextAlive()) { shutdown(); return; }
+      if (error?.name === 'AbortError' || requestId !== pieceRequest) return;
+      pieceScores = null;
+      removePieceMarkers();
+      pieceStatusEl.textContent = `Piece move scores unavailable: ${error?.message || 'engine error'}`;
+    }
+  }
+
+  // Watches for a piece being picked up or clicked on the analysed board (click-to-move and drag
+  // both start with a pointerdown). The page still receives the event: the overlay only reads it.
+  function onBoardPointerDown(event) {
+    if (!active || !pieceScoresEnabled || event.button !== 0 || event.target?.closest?.('#pawnforge-hud')) return;
+    const known = currentSnapshot?.board?.element;
+    const element = known?.isConnected ? known : findBoardModel()?.element;
+    if (!element) return;
+    const rect = element.getBoundingClientRect();
+    if (event.clientX < rect.left || event.clientX >= rect.right || event.clientY < rect.top || event.clientY >= rect.bottom) return;
+    const square = squareFromPoint(rect, event.clientX, event.clientY, boardOrientation(element));
+    // Clicking the selected piece again deselects it, as on the chess sites.
+    if (pieceScores?.square === square) { clearPieceScores(); return; }
+    // The square is checked against a freshly read position, which may be newer than the last analysis.
+    void scorePieceMoves(square);
+  }
+
   async function analyzePosition(force = false, { optIn = false } = {}) {
     if (!active) return;
     updateBotRow();
@@ -1203,31 +1423,17 @@
     try {
       const play = botPlayRequest(snapshot);
       const payload = play ? { fen: snapshot.fen, play } : { fen: snapshot.fen, settings: { depth, multiPv: CANDIDATE_COUNT } };
-      let data;
-      if (isExtension) {
-        if (!extensionContextAlive()) {
-          shutdown();
-          return;
-        }
-        const relayId = `${instanceId}:${requestId}`;
-        analysisController.signal.addEventListener('abort', () => {
-          try {
-            extensionRuntime.sendMessage({ type: 'cancel-analysis', requestId: relayId }).catch(() => {});
-          } catch (_error) { /* An orphaned extension has no relay left to cancel. */ }
-        }, { once: true });
-        const result = await extensionRuntime.sendMessage({ type: 'analyze-position', requestId: relayId, endpoint, payload });
-        if (result?.error) throw new Error(result.error);
-        data = result.data;
-      } else {
-        const url = play ? new URL('/api/play/move', endpoint) : endpoint;
-        const body = play ? { fen: snapshot.fen, ...play } : payload;
-        const response = await fetch(url, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body), signal: analysisController.signal
-        });
-        data = await response.json();
-        if (!response.ok) throw new Error(data.error || `Engine returned HTTP ${response.status}`);
+      if (isExtension && !extensionContextAlive()) {
+        shutdown();
+        return;
       }
+      const data = await engineRequest(payload, {
+        channel: 'analysis',
+        relayId: `${instanceId}:${requestId}`,
+        controller: analysisController,
+        directUrl: play ? new URL('/api/play/move', endpoint) : endpoint,
+        directBody: play ? { fen: snapshot.fen, ...play } : payload
+      });
       if (!active || requestId !== analysisRequest || snapshot.fen !== lastPositionKey) return;
       const latestSnapshot = await detectCurrentPosition();
       if (!active || requestId !== analysisRequest) return;
@@ -1305,7 +1511,7 @@
   async function loadSettings() {
     if (!extensionStorage) return;
     try {
-      const stored = await extensionStorage.get(['endpoint', 'approximate', 'depth', 'weaker', 'minimized', 'botMode']);
+      const stored = await extensionStorage.get(['endpoint', 'approximate', 'depth', 'weaker', 'minimized', 'botMode', 'pieceScores', 'pieceScoreFormat']);
       // A stored value applies only when it is valid and the user has not changed that setting meanwhile.
       const apply = (key, isValid, set) => {
         if (!editedSettings.has(key) && isValid(stored[key])) set(stored[key]);
@@ -1316,6 +1522,10 @@
       apply('minimized', isBoolean, setMinimized);
       apply('depth', (value) => DEPTH_CHOICES.includes(value), (value) => { depth = value; });
       apply('botMode', (value) => BOT_MODES.includes(value), (value) => { botMode = value; });
+      apply('pieceScores', isBoolean, (value) => { pieceScoresEnabled = value; });
+      apply('pieceScoreFormat', (value) => PIECE_SCORE_FORMATS.includes(value), (value) => { pieceScoreFormat = value; });
+      pieceScoresEl.checked = pieceScoresEnabled;
+      pieceFormatEl.value = pieceScoreFormat;
       botModeEl.value = botMode;
       depthEl.value = String(depth);
       if (!editedSettings.has('endpointField')) endpointEl.value = endpoint;
@@ -1327,7 +1537,10 @@
   function persistSettings() {
     if (!extensionStorage || !extensionContextAlive()) return;
     try {
-      extensionStorage.set({ endpoint, depth, minimized, botMode, approximate: approximateEl.checked, weaker: weakerEl.checked }).catch(() => {});
+      extensionStorage.set({
+        endpoint, depth, minimized, botMode, pieceScoreFormat,
+        pieceScores: pieceScoresEnabled, approximate: approximateEl.checked, weaker: weakerEl.checked
+      }).catch(() => {});
     } catch (_error) {
       // The extension was reloaded; the next poll shuts this orphaned instance down.
     }
@@ -1361,8 +1574,10 @@
     window.removeEventListener('mouseup', onMouseUp);
     window.removeEventListener('scroll', onViewportChange);
     window.removeEventListener('resize', onViewportChange);
+    document.removeEventListener('pointerdown', onBoardPointerDown, true);
     removePointers();
     clearVerdict();
+    clearPieceScores();
     if (hud.isConnected) {
       hud.remove();
       style.remove();
@@ -1379,6 +1594,7 @@
       if (analysisController) analysisController.abort();
       previousAnalysis = null;
       clearAnalysisUi();
+      clearPieceScores();
       setMessage('Coach assistance is off.');
       setHint('Turn Coach on to resume position detection.');
       return;
@@ -1433,6 +1649,20 @@
     lastPositionKey = '';
     void analyzePosition(true);
   });
+  pieceScoresEl.addEventListener('change', () => {
+    pieceScoresEnabled = pieceScoresEl.checked;
+    editedSettings.add('pieceScores');
+    persistSettings();
+    if (!pieceScoresEnabled) clearPieceScores();
+  });
+  pieceFormatEl.addEventListener('change', () => {
+    if (!PIECE_SCORE_FORMATS.includes(pieceFormatEl.value)) return;
+    pieceScoreFormat = pieceFormatEl.value;
+    editedSettings.add('pieceScoreFormat');
+    persistSettings();
+    // Re-label the scores already on the board; no new engine request is needed.
+    if (pieceScores?.moves) renderPieceScores();
+  });
   analyzeEl.addEventListener('click', () => analyzePosition(true, { optIn: true }));
   useFenEl.addEventListener('click', () => {
     const value = normaliseFen(fenEl.value);
@@ -1483,6 +1713,7 @@
   window.addEventListener('mouseup', onMouseUp);
   window.addEventListener('scroll', onViewportChange, { passive: true });
   window.addEventListener('resize', onViewportChange, { passive: true });
+  document.addEventListener('pointerdown', onBoardPointerDown, true);
 
   if (extensionRuntime?.onMessage) {
     extensionRuntime.onMessage.addListener((message) => {

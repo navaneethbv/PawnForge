@@ -1257,12 +1257,16 @@
     return marker;
   }
 
-  function pieceMoveMarker(entry, loss, isBest, sideToMove) {
-    const category = classifyLoss(loss);
+  // Piece move colours: the piece's best move is always green; the rest by what they lose against it.
+  const PIECE_MOVE_COLORS = { best: '#22c55e', good: '#a3e635', inaccuracy: '#f59e0b', mistake: '#f97316', blunder: '#ef4444' };
+
+  // `loss` is shown in the label (against the position's best); `pieceLoss` picks the colour.
+  function pieceMoveMarker(entry, { loss, pieceLoss, isBest }, sideToMove) {
+    const category = isBest ? classifyLoss(0) : classifyLoss(pieceLoss);
     const marker = pieceMarker('pawnforge-piece-move', 'piece-move', entry.target);
     marker.classList.toggle('pawnforge-piece-move-best', isBest);
     marker.dataset.category = category.key;
-    marker.style.setProperty('--pawnforge-score-color', VERDICT_COLORS[category.key]);
+    marker.style.setProperty('--pawnforge-score-color', PIECE_MOVE_COLORS[category.key]);
     const label = document.createElement('span');
     label.className = 'pawnforge-piece-move-label';
     const promotion = entry.uci.length > 4 ? `=${entry.uci[4].toUpperCase()} ` : '';
@@ -1281,9 +1285,14 @@
     const best = entries.reduce((top, entry) => (entry.cp > top.cp ? entry : top));
     const referenceCp = clampEval(pieceReferenceCp(fen, best.cp));
     const lossOf = (entry) => Math.max(0, referenceCp - clampEval(entry.cp));
-    for (const entry of entries) pieceMarkers.push(pieceMoveMarker(entry, lossOf(entry), entry === best, sideToMove));
+    for (const entry of entries) {
+      const scores = { loss: lossOf(entry), pieceLoss: Math.max(0, clampEval(best.cp) - clampEval(entry.cp)), isBest: entry === best };
+      pieceMarkers.push(pieceMoveMarker(entry, scores, sideToMove));
+    }
     const count = `${entries.length} ${entries.length === 1 ? 'move' : 'moves'}`;
-    return `${where}: ${count}, best ${squareLabel(best.target)} (${pieceScoreLabel(best.cp, lossOf(best), sideToMove)}). Green is best, red is a blunder.`;
+    // The piece's best move is green even when another piece has a better move; say so.
+    const behind = lossOf(best) > 20 ? ` A better move elsewhere gains ${(lossOf(best) / 100).toFixed(1)} more.` : '';
+    return `${where}: ${count}, best ${squareLabel(best.target)} (${pieceScoreLabel(best.cp, lossOf(best), sideToMove)}). Green is best, red is a blunder.${behind}`;
   }
 
   function renderPieceScores() {

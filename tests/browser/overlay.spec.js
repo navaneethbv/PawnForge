@@ -547,13 +547,13 @@ test('lichess games against the Stockfish AI or a BOT account count as bot games
 });
 
 // Answers piece-move requests (settings.square) with `pieceMoves`, and the main analysis with one line.
-async function routePieceScores(page, pieceMoves) {
+async function routePieceScores(page, pieceMoves, { bestCp = -10 } = {}) {
   const requests = [];
   await page.route('**/api/analyze/position', async (route) => {
     const body = route.request().postDataJSON();
     requests.push(body);
     if (body.settings?.square) await route.fulfill({ json: { fen: body.fen, square: body.settings.square, moves: pieceMoves } });
-    else await route.fulfill({ json: { topMoves: [{ uci: 'd7b6', evalCp: -10, pv: 'd7b6' }] } });
+    else await route.fulfill({ json: { topMoves: [{ uci: 'h7h6', evalCp: bestCp, pv: 'h7h6' }] } });
   });
   return requests;
 }
@@ -664,4 +664,23 @@ test('piece move scores stay off in live games against people and when the optio
   await page.locator('#pawnforge-piece-scores').check();
   await selectSquare(page, 'd7');
   await expect(page.locator('[data-pawnforge-pointer="piece-move"]')).toHaveCount(4);
+});
+
+test("a piece's best move is green even when another piece has a better move", async ({ page }) => {
+  // The main analysis finds a move 1.5 pawns better than anything the knight can do.
+  await routePieceScores(page, knightMoves.slice(0, 2), { bestCp: 140 });
+  await openSiteUrl(page, 'http://lichess.org/analysis');
+  await chessComFixture(page);
+  await injectOverlay(page);
+  await page.locator('#pawnforge-approximate').check();
+  await expect(page.locator('#pawnforge-hud-candidates button').first()).toBeVisible();
+  await selectSquare(page, 'd7');
+  const markers = page.locator('[data-pawnforge-pointer="piece-move"]');
+  await expect(markers).toHaveCount(2);
+  // Colours compare the knight's own moves; the loss labels still use the position's best move.
+  expect(await markers.evaluateAll((elements) => elements.map((element) => [element.dataset.square, element.dataset.category]))).toEqual([['b6', 'best'], ['f6', 'good']]);
+  expect(await markers.first().evaluate((element) => getComputedStyle(element).borderTopColor)).toBe('rgb(34, 197, 94)');
+  await expect(page.locator('#pawnforge-piece-status')).toContainText('A better move elsewhere gains 1.5 more.');
+  await page.locator('#pawnforge-piece-format').selectOption('loss');
+  expect(await markers.allTextContents()).toEqual(['−1.5', '−2.0']);
 });

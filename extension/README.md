@@ -41,7 +41,8 @@ In games against people the row stays hidden and the overlay uses Coach mode, ev
 On approximate DOM positions, the throw plan reads the move number from the move list.
 These settings are remembered.
 **Score a piece's moves when I select it** scores every legal move of a piece you click or pick up on the board.
-Each square the piece can reach gets a marker with its score, coloured like the move verdicts: green for the best and good moves, amber for an inaccuracy, orange for a mistake, red for a blunder.
+Each square the piece can reach gets a marker with its score. The piece's best move is always green; the others are coloured by what they lose against it: lime for good, amber for an inaccuracy, orange for a mistake, red for a blunder.
+When another piece has a clearly better move, the status line says how much more it gains.
 Promotions show the best piece for each square (for example `=Q +6.00`).
 **Score as** chooses the number: the evaluation for the side moving (+ is good), the evaluation from White's view, or the loss against the best move in the position (0 is best).
 Clicking the piece again, an empty square, or an opponent's piece clears the markers, and so does the next move.

@@ -623,8 +623,14 @@ test('selecting a piece on an analysis board scores every move it can make', asy
   await expect(markers).toHaveCount(0);
   await selectSquare(page, 'd7');
   await expect(markers).toHaveCount(4);
+  expect(requests.filter((body) => body.settings?.square)).toHaveLength(1);
   await selectSquare(page, 'd7');
   await expect(markers).toHaveCount(0);
+
+  await page.locator('#pawnforge-depth').selectOption('12');
+  await selectSquare(page, 'd7');
+  await expect(markers).toHaveCount(4);
+  expect(requests.filter((body) => body.settings?.square).map((body) => body.settings.depth)).toEqual([8, 12]);
 });
 
 test('promotions keep the best piece for each square', async ({ page }) => {

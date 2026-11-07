@@ -1841,11 +1841,11 @@ function nextPuzzle() {
   startPuzzle(unsolved.at(after + 1) ?? unsolved.find((p) => p.fen !== current) ?? null);
 }
 
-// Checks a move made on the board while a puzzle is open; promotions are taken as a queen.
+// Match the solution promotion so underpromotion puzzles can be completed.
 function handlePuzzleDrop(source, target) {
   const session = puzzleSession;
   let move;
-  try { move = game.move({ from: source, to: target, promotion: 'q' }); } catch (_e) { return 'snapback'; }
+  try { move = game.move({ from: source, to: target, promotion: session.puzzle.solution[4] || 'q' }); } catch (_e) { return 'snapback'; }
   if (!move) return 'snapback';
   const uci = `${move.from}${move.to}${move.promotion || ''}`;
   if (uci !== session.puzzle.solution) {

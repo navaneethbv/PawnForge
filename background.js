@@ -72,16 +72,6 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   }
 });
 
-// Piece move score site rules live in site-rules.json (see extension/README.md); the overlay asks for them.
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message?.type !== 'site-rules') return undefined;
-  fetch(chrome.runtime.getURL('site-rules.json'))
-    .then((response) => response.json())
-    .then((rules) => sendResponse({ rules }))
-    .catch(() => sendResponse({ rules: null }));
-  return true;
-});
-
 // Serialize claims so two tabs enabling scoring together cannot both show the reminder.
 let fairPlayReminderClaim = Promise.resolve(false);
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -137,7 +127,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 chrome.action.onClicked.addListener(async (tab) => {
-  if (!tab.id || !/^https?:\/\/([\w-]+\.)*(chess\.com|lichess\.org|chesstempo\.com|chess\.org)\//.test(tab.url || '')) return;
+  if (!tab.id || !/^https?:\/\/([\w-]+\.)*(chess\.com|lichess\.org|chesstempo\.com|chess\.org)(?::\d+)?\//.test(tab.url || '')) return;
   try {
     await chrome.tabs.sendMessage(tab.id, { type: 'toggle-overlay' });
   } catch (_error) {

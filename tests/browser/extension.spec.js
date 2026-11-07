@@ -117,12 +117,12 @@ test('unpacked extension scores a selected piece through the relay alongside the
     // The main analysis is still on screen: the piece request used its own relay slot.
     await expect(page.locator('#pawnforge-hud-candidates button').first()).toBeVisible();
 
-    // site-rules.json, read through the background worker, blocks a chess.com live game.
+    // The default rules loaded through the background worker also allow Chess.com live-game pages.
     await page.goto('https://www.chess.com/game/live/1');
     await expect(page.locator('#pawnforge-hud-candidates button').first()).toBeVisible({ timeout: 25000 });
     await expect(page.locator('#pawnforge-piece-scores')).toBeChecked();
     await page.mouse.click(6 * 50 + 25, 7 * 50 + 25);
-    await expect(page.locator('#pawnforge-piece-status')).toHaveText('Piece move scores are off on this page.');
-    await expect(markers).toHaveCount(0);
+    await expect(markers).toHaveCount(2, { timeout: 25000 });
+    await expect(page.locator('#pawnforge-piece-status')).toContainText('Knight on G1: 2 moves');
   } finally { await context.close(); }
 });

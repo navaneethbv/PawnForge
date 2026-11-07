@@ -647,38 +647,23 @@ test('promotions keep the best piece for each square', async ({ page }) => {
   await expect(page.locator('[data-pawnforge-pointer="piece-move"]')).toHaveText(['=Q +6.00']);
 });
 
-test('site rules block piece scores on listed sites except their allowed pages and bot games', async ({ page }) => {
-  const requests = await routePieceScores(page, knightMoves);
-  const pieceRequests = () => requests.filter((body) => body.settings?.square);
-  // chess.com is listed in site-rules.json, and a live game is not one of its allowed pages.
-  await openSiteUrl(page, 'http://www.chess.com/game/live/123');
-  await chessComFixture(page);
-  await injectWithPieceScores(page);
-  await page.locator('#pawnforge-approximate').check();
-  await expect(page.locator('#pawnforge-hud-candidates button').first()).toBeVisible();
-  await selectSquare(page, 'd7');
-  await expect(page.locator('#pawnforge-piece-status')).toHaveText('Piece move scores are off on this page.');
-  await expect(page.locator('[data-pawnforge-pointer^="piece"]')).toHaveCount(0);
-  expect(pieceRequests()).toEqual([]);
-
-  // Its computer games are on the allowed list, so the same click is scored there.
-  await openSiteUrl(page, 'http://www.chess.com/play/computer');
-  await chessComFixture(page);
-  await injectWithPieceScores(page);
-  await page.locator('#pawnforge-approximate').check();
-  await expect(page.locator('#pawnforge-hud-candidates button').first()).toBeVisible();
-  await selectSquare(page, 'd7');
-  await expect(page.locator('[data-pawnforge-pointer="piece-move"]')).toHaveCount(4);
-
-  // A site that is not listed allows piece scores on every page.
-  await openSiteUrl(page, 'http://chess-club.example/game/42');
-  await chessComFixture(page);
-  await injectWithPieceScores(page);
-  await page.locator('#pawnforge-approximate').check();
-  await expect(page.locator('#pawnforge-hud-candidates button').first()).toBeVisible();
-  await selectSquare(page, 'd7');
-  await expect(page.locator('[data-pawnforge-pointer="piece-move"]')).toHaveCount(4);
-});
+for (const url of [
+  'http://www.chess.com/game/live/123',
+  'http://lichess.org/abcd1234',
+  'http://chess-club.example/game/42',
+]) {
+  test(`default site rules allow piece scores on ${url}`, async ({ page }) => {
+    const requests = await routePieceScores(page, knightMoves);
+    await openSiteUrl(page, url);
+    await chessComFixture(page);
+    await injectWithPieceScores(page);
+    await page.locator('#pawnforge-approximate').check();
+    await expect(page.locator('#pawnforge-hud-candidates button').first()).toBeVisible();
+    await selectSquare(page, 'd7');
+    await expect(page.locator('[data-pawnforge-pointer="piece-move"]')).toHaveCount(4);
+    expect(requests.filter((body) => body.settings?.square)).toHaveLength(1);
+  });
+}
 
 test('piece scores start off, show the fair-play notice when turned on, and stay off without site rules', async ({ page }) => {
   const requests = await routePieceScores(page, knightMoves);

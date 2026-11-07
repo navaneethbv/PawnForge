@@ -35,11 +35,8 @@ A manual FEN takes precedence and supplies all six fields.
 The panel lists the five best engine moves, best first; select one to move the board highlights.
 The minimize button collapses the panel to a one-line bar that keeps analysing, highlights the suggested move on the board, and shows it with the last move's verdict.
 **Suggest weaker moves** selects the line with the largest loss between 0.4 and 1.5 pawns against the best move; if none qualifies it takes the closest weaker line under 1.5 pawns, and otherwise the best move.
-**Vs bot** appears only in games against a computer: Chess.com's computer play pages (`/play/computer`, `/game/computer`), and Lichess games against the Stockfish AI or a BOT account.
+
 It can suggest moves at a rated strength (Elo 1320 to 2500), or throw the game by about move 25, 30, 40, or 50 using the same plan as the app's **Throw the game** mode.
-In games against people the row stays hidden and the overlay uses Coach mode, even if a vs-bot mode was chosen earlier.
-On approximate DOM positions, the throw plan reads the move number from the move list.
-These settings are remembered.
 **Score a piece's moves when I select it** scores every legal move of a piece you click or pick up on the board.
 Each square the piece can reach gets a marker with its score. The piece's best move is always green; the others are coloured by what they lose against it: lime for good, amber for an inaccuracy, orange for a mistake, red for a blunder.
 When another piece has a clearly better move, the status line says how much more it gains.
@@ -48,28 +45,6 @@ Promotions show the best piece for each square (for example `=Q +6.00`).
 Clicking the piece again, an empty square, or an opponent's piece clears the markers, and so does the next move.
 The option starts off. Turning it on shows a reminder that it is for learning on analysis boards and against bots, and that engine help in live games against people is cheating.
 
-### Site rules for piece move scores
-
-Piece move scores work on every site the overlay runs on, except the sites listed in `site-rules.json` at the repository root:
-
-```json
-{
-  "pieceScores": {
-    "blockedSites": [
-      { "domain": "chess.com", "allowPaths": ["/analysis", "/play/computer", "/game/computer"] },
-      { "domain": "lichess.org", "allowPaths": ["/analysis", "/study"] }
-    ]
-  }
-}
-```
-
-- `domain` blocks that site and all its subdomains (`chess.com` also covers `www.chess.com`).
-- `allowPaths` lists pages on a blocked site where piece scores still work: a path matches itself and anything below it (`/analysis` covers `/analysis/game/123`). Leave it out to block the whole site.
-- Games against a computer that the overlay recognises (see **Vs bot**) also stay allowed on a blocked site.
-- On a blocked page the status line says "Piece move scores are off on this page."
-
-To block another site, add an entry and reload the extension at `chrome://extensions`. `npm run check:extension` checks the file's format.
-`site-rules.json` only decides where piece scores work. The overlay itself loads on the domains in `manifest.json` (`host_permissions` and `content_scripts.matches`) and in the toolbar check in `background.js`; to run the overlay on a new site, add it there too.
 The search uses the Depth setting, capped at 16 so a queen's 27 moves still return quickly.
 The Depth selector sets the engine search depth (8, 12, 16 or 20); changing it starts a fresh blunder-detector history because evaluations from different depths are not comparable.
 

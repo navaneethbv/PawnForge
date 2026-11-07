@@ -53,11 +53,11 @@ A canvas-only board without a page FEN needs a manually pasted FEN because brows
 
 ## Scope and privacy
 
-Automatic injection and page access are limited to Chess.com, Lichess, ChessTempo, and chess.org, including their subdomains.
-The extension toolbar also respects this allowlist.
+Automatic injection and page access cover HTTP and HTTPS websites.
+The extension toolbar can toggle the overlay on those websites.
 Chess.com and Lichess have site-specific readers; ChessTempo and chess.org use generic DOM detection or a manually pasted FEN.
 Live compatibility with every page on those sites is not guaranteed.
-Only loopback server access is granted in addition to those chess domains, including custom local ports.
+Chrome internal pages and other browser-protected pages cannot run content scripts.
 Position data is sent only to the configured loopback PawnForge endpoint through the extension background worker.
 The relay rejects remote endpoints and limits each analysis request to 20 seconds.
 The local server rejects API calls from arbitrary website origins; use the extension instead of cross-site script injection.

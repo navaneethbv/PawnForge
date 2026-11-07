@@ -75,14 +75,15 @@
   const PIECE_SCORE_FORMATS = ['mover', 'white', 'loss'];
   // Off until the user turns it on, which shows the fair-play notice.
   let pieceScoresEnabled = false;
-  // Sites where piece scores are blocked, from site-rules.json; null until loaded.
-  let siteRules = null;
   let pieceScoreFormat = 'mover';
   // { fen, square, board, moves } for the selected piece; moves is null while the engine works.
   let pieceScores = null;
   let pieceMarkers = [];
   let pieceRequest = 0;
   let pieceController = null;
+  // Reuse scores while the player explores pieces in the same position and engine settings.
+  let pieceCacheContext = '';
+  const pieceMoveCache = new Map();
 
   // A position must read the same on two consecutive polls before it is analysed, which skips
   // mid-animation frames while keeping move-to-analysis latency well under half a second.
@@ -1217,33 +1218,6 @@
     return data;
   }
 
-  // Site rules come from site-rules.json through the extension; a page script (tests, bookmarklet)
-  // can supply the same object as window.__PAWNFORGE_SITE_RULES__.
-  async function loadSiteRules() {
-    let rules = root.__PAWNFORGE_SITE_RULES__ ?? null;
-    if (!rules && isExtension && extensionContextAlive()) {
-      try {
-        rules = (await extensionRuntime.sendMessage({ type: 'site-rules' }))?.rules ?? null;
-      } catch (_error) { rules = null; }
-    }
-    const sites = rules?.pieceScores?.blockedSites;
-    siteRules = Array.isArray(sites) ? sites.filter((site) => typeof site?.domain === 'string') : null;
-  }
-
-  const pathAllowed = (path, allowed) => path === allowed || path.startsWith(allowed.endsWith('/') ? allowed : `${allowed}/`);
-
-  // Piece move scores work on every site except those listed in site-rules.json. On a listed site
-  // they still work on its allowPaths pages (analysis boards, computer games) and in bot games.
-  // Without loaded rules they stay off rather than guess.
-  function pieceScoresAllowed() {
-    if (!siteRules) return false;
-    const host = location.hostname.toLowerCase();
-    const site = siteRules.find(({ domain }) => host === domain || host.endsWith(`.${domain}`));
-    if (!site) return true;
-    if ((site.allowPaths ?? []).some((allowed) => pathAllowed(location.pathname, allowed))) return true;
-    return isBotGame();
-  }
-
   const squareLabel = (square) => square.toUpperCase();
 
   // The score shown on a destination square, in the chosen format. `cp` is from the mover's view.
@@ -1356,7 +1330,6 @@
     if (snapshot.approximate && !approximateEl.checked) return 'Turn on approximate DOM analysis (or paste a FEN) to score piece moves on this board.';
     const [placement, sideToMove] = snapshot.fen.split(' ');
     if (pieceColor(placementSquares(placement).get(square)) !== sideToMove) return '';
-    if (!pieceScoresAllowed()) return 'Piece move scores are off on this page.';
     return null;
   }
 
@@ -1375,12 +1348,21 @@
     if (!active || requestId !== pieceRequest || !snapshot?.fen) return;
     const blocker = pieceScoreBlocker(snapshot, square);
     if (blocker !== null) { pieceStatusEl.textContent = blocker; return; }
-    pieceController = new AbortController();
-    pieceScores = { fen: snapshot.fen, square, board: snapshot.board, moves: null };
+    const cacheContext = JSON.stringify([snapshot.fen, endpoint, depth]);
+    if (pieceCacheContext !== cacheContext) {
+      pieceCacheContext = cacheContext;
+      pieceMoveCache.clear();
+    }
+    const cachedMoves = pieceMoveCache.get(square);
+    pieceScores = { fen: snapshot.fen, square, board: snapshot.board, moves: cachedMoves ?? null };
     renderPieceScores();
+    if (cachedMoves) return;
+
+    pieceController = new AbortController();
     try {
       const moves = await fetchPieceMoves(snapshot, square, requestId);
       if (!moves || !active || requestId !== pieceRequest) return;
+      pieceMoveCache.set(square, moves);
       pieceScores.moves = moves;
       renderPieceScores();
     } catch (error) {
@@ -1801,7 +1783,6 @@
     });
   }
 
-  void loadSiteRules();
   void loadSettings().finally(() => { void analyzePosition(true); });
   pollTimer = window.setInterval(() => {
     if (!hud.isConnected || (isExtension && !extensionContextAlive())) shutdown();

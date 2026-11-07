@@ -28,12 +28,4 @@ for (const file of files) {
   assert.ok((await stat(path)).isFile(), `Extension asset is not a file: ${file}`);
 }
 
-// Sites where piece move scores are blocked; the overlay reads this file through the background worker.
-const siteRules = JSON.parse(await readFile(resolve(root, 'site-rules.json'), 'utf8'));
-const blockedSites = siteRules.pieceScores?.blockedSites;
-assert.ok(Array.isArray(blockedSites), 'site-rules.json needs a pieceScores.blockedSites list');
-for (const site of blockedSites) {
-  assert.match(site.domain ?? '', /^[a-z0-9-]+(\.[a-z0-9-]+)+$/, `Blocked site needs a bare domain such as chess.com: ${JSON.stringify(site)}`);
-  for (const path of site.allowPaths ?? []) assert.match(path, /^\/[^\s?#]*$/, `allowPaths entries are page paths starting with /: ${path}`);
-}
-console.log(`Manifest V3 valid; ${files.size} referenced assets exist; ${blockedSites.length} piece-score blocked sites.`);
+console.log(`Manifest V3 valid; ${files.size} referenced assets exist.`);

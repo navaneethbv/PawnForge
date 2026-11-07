@@ -62,7 +62,7 @@ test('unpacked extension relays foreign-page FEN analysis to the local API', asy
   } finally { await context.close(); }
 });
 
-test('automatic injection is limited to the supported chess domains', async () => {
+test('automatic injection works across HTTP and HTTPS websites', async () => {
   const extension = resolve('.');
   const context = await chromium.launchPersistentContext('', {
     channel: 'chromium', headless: true,
@@ -75,16 +75,15 @@ test('automatic injection is limited to the supported chess domains', async () =
       await page.goto(`https://${domain}/`);
       await expect(page.locator('#pawnforge-hud')).toBeVisible();
     }
-    for (const domain of ['example.org', 'chess.com.example.org']) {
-      await page.goto(`https://${domain}/`);
-      await page.waitForTimeout(300);
-      await expect(page.locator('#pawnforge-hud')).toHaveCount(0);
+    for (const url of ['https://example.org/', 'http://chess-club.example/', 'https://chess.com.example.org/']) {
+      await page.goto(url);
+      await expect(page.locator('#pawnforge-hud')).toBeVisible();
     }
     const worker = context.serviceWorkers()[0];
     const permissions = await worker.evaluate(() => chrome.permissions.getAll());
     expect(permissions.origins).not.toContain('<all_urls>');
-    expect(permissions.origins).not.toContain('http://*/*');
-    expect(permissions.origins).not.toContain('https://*/*');
+    expect(permissions.origins).toContain('http://*/*');
+    expect(permissions.origins).toContain('https://*/*');
   } finally { await context.close(); }
 });
 

@@ -16,6 +16,8 @@
   "host_permissions": [
     "*://*.chess.com/*",
     "*://*.lichess.org/*",
+    "*://*.chesstempo.com/*",
+    "*://*.chess.org/*",
     "http://127.0.0.1/*",
     "http://localhost/*"
   ],
@@ -23,7 +25,9 @@
     {
       "matches": [
         "*://*.chess.com/*",
-        "*://*.lichess.org/*"
+        "*://*.lichess.org/*",
+        "*://*.chesstempo.com/*",
+        "*://*.chess.org/*"
       ],
       "js": [
         "overlay.js"

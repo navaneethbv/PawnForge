@@ -62,7 +62,7 @@ test('unpacked extension relays foreign-page FEN analysis to the local API', asy
   } finally { await context.close(); }
 });
 
-test('automatic injection is limited to Chess.com and Lichess', async () => {
+test('automatic injection is limited to the four allowed chess sites', async () => {
   const extension = resolve('.');
   const context = await chromium.launchPersistentContext('', {
     channel: 'chromium', headless: true,
@@ -71,11 +71,11 @@ test('automatic injection is limited to Chess.com and Lichess', async () => {
   try {
     const page = await context.newPage();
     await page.route('**/*', route => route.fulfill({ contentType: 'text/html', body: '<!doctype html><body>No board</body>' }));
-    for (const domain of ['chess.com', 'www.chess.com', 'lichess.org', 'www.lichess.org']) {
+    for (const domain of ['chess.com', 'www.chess.com', 'lichess.org', 'www.lichess.org', 'chesstempo.com', 'www.chesstempo.com', 'chess.org', 'www.chess.org']) {
       await page.goto(`https://${domain}/`);
       await expect(page.locator('#pawnforge-hud')).toBeVisible();
     }
-    for (const url of ['https://example.org/', 'http://chess-club.example/', 'https://chess.com.example.org/', 'https://lichess.org.example.org/', 'https://chesstempo.com/', 'https://chess.org/']) {
+    for (const url of ['https://example.org/', 'http://chess-club.example/', 'https://chess.com.example.org/', 'https://lichess.org.example.org/', 'https://chesstempo.com.example.org/', 'https://chess.org.example.org/']) {
       await page.goto(url);
       await page.waitForTimeout(300);
       await expect(page.locator('#pawnforge-hud')).toHaveCount(0);

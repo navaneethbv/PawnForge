@@ -53,7 +53,7 @@ A canvas-only board without a page FEN needs a manually pasted FEN because brows
 
 ## Scope and privacy
 
-Automatic injection and page access are limited to Chess.com and Lichess, including their subdomains.
+Automatic injection and page access are limited to Chess.com, Lichess, ChessTempo, and chess.org, including their subdomains.
 The extension toolbar can toggle the overlay on those websites.
 Chess.com and Lichess have site-specific readers, with generic DOM detection or a manually pasted FEN as fallbacks.
 Live compatibility with every page on those sites is not guaranteed.

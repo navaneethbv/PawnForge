@@ -665,7 +665,7 @@ for (const url of [
   });
 }
 
-test('piece scores start off, show the fair-play notice when turned on, and stay off without site rules', async ({ page }) => {
+test('piece scores start off, show the fair-play notice once, and stay off without site rules', async ({ page }) => {
   const requests = await routePieceScores(page, knightMoves);
   const pieceRequests = () => requests.filter((body) => body.settings?.square);
   await openSiteUrl(page, 'http://chess-club.example/analysis');
@@ -681,6 +681,9 @@ test('piece scores start off, show the fair-play notice when turned on, and stay
 
   await page.locator('#pawnforge-piece-scores').check();
   await expect(page.locator('#pawnforge-piece-status')).toContainText('Using engine help in live games against people is cheating');
+  await page.locator('#pawnforge-piece-scores').uncheck();
+  await page.locator('#pawnforge-piece-scores').check();
+  await expect(page.locator('#pawnforge-piece-status')).toBeEmpty();
   await selectSquare(page, 'd7');
   await expect(page.locator('#pawnforge-piece-status')).toHaveText('Piece move scores are off on this page.');
   expect(pieceRequests()).toEqual([]);

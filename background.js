@@ -82,6 +82,20 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   return true;
 });
 
+// Serialize claims so two tabs enabling scoring together cannot both show the reminder.
+let fairPlayReminderClaim = Promise.resolve(false);
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type !== 'claim-fair-play-reminder' || !sender.tab?.id) return undefined;
+  fairPlayReminderClaim = fairPlayReminderClaim.then(async () => {
+    const { fairPlayReminderShown } = await chrome.storage.local.get('fairPlayReminderShown');
+    if (fairPlayReminderShown) return false;
+    await chrome.storage.local.set({ fairPlayReminderShown: true });
+    return true;
+  }).catch(() => false);
+  void fairPlayReminderClaim.then(sendResponse);
+  return true;
+});
+
 // Runs in the page's MAIN world, where site objects such as chess.com's board element are visible.
 // Injected functions are serialised, so helpers must live inside this function.
 function readFenFromPage() {

@@ -1254,6 +1254,26 @@
 
   const FAIR_PLAY_NOTICE = 'Piece move scores are for learning: use them on analysis boards and against bots. Using engine help in live games against people is cheating and breaks chess sites\' rules.';
 
+  let fairPlayReminderShown = false;
+  async function claimFairPlayReminder() {
+    if (isExtension) {
+      try {
+        return (await extensionRuntime.sendMessage({ type: 'claim-fair-play-reminder' })) === true;
+      } catch (_error) {
+        return false;
+      }
+    }
+
+    if (fairPlayReminderShown) return false;
+    fairPlayReminderShown = true;
+    try {
+      const key = 'pawnforge.fairPlayReminderShown';
+      if (root.localStorage.getItem(key)) return false;
+      root.localStorage.setItem(key, 'true');
+    } catch (_error) { /* The current overlay still remembers the reminder when storage is unavailable. */ }
+    return true;
+  }
+
   // One entry per destination square; promotions reach a square several ways, so keep the best.
   function bestMovePerTarget(moves) {
     const byTarget = new Map();
@@ -1706,12 +1726,14 @@
     lastPositionKey = '';
     void analyzePosition(true);
   });
-  pieceScoresEl.addEventListener('change', () => {
+  pieceScoresEl.addEventListener('change', async () => {
     pieceScoresEnabled = pieceScoresEl.checked;
     editedSettings.add('pieceScores');
     persistSettings();
     clearPieceScores();
-    if (pieceScoresEnabled) pieceStatusEl.textContent = FAIR_PLAY_NOTICE;
+    if (pieceScoresEnabled && await claimFairPlayReminder() && active && pieceScoresEnabled && !pieceStatusEl.textContent) {
+      pieceStatusEl.textContent = FAIR_PLAY_NOTICE;
+    }
   });
   pieceFormatEl.addEventListener('change', () => {
     if (!PIECE_SCORE_FORMATS.includes(pieceFormatEl.value)) return;

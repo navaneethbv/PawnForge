@@ -43,7 +43,7 @@ When another piece has a clearly better move, the status line says how much more
 Promotions show the best piece for each square (for example `=Q +6.00`).
 **Score as** chooses the number: the evaluation for the side moving (+ is good), the evaluation from White's view, or the loss against the best move in the position (0 is best).
 Clicking the piece again, an empty square, or an opponent's piece clears the markers, and so does the next move.
-The option starts off. Turning it on shows a reminder that it is for learning on analysis boards and against bots, and that engine help in live games against people is cheating.
+The option starts off. The first time you turn it on, PawnForge shows a reminder that it is for learning on analysis boards and against bots, and that engine help in live games against people is cheating.
 
 The search uses the Depth setting, capped at 16 so a queen's 27 moves still return quickly.
 The Depth selector sets the engine search depth (8, 12, 16 or 20); changing it starts a fresh blunder-detector history because evaluations from different depths are not comparable.

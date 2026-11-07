@@ -1775,7 +1775,7 @@
   window.addEventListener('mouseup', onMouseUp);
   window.addEventListener('scroll', onViewportChange, { passive: true });
   window.addEventListener('resize', onViewportChange, { passive: true });
-  document.addEventListener('pointerdown', onBoardPointerDown, true);
+  document.addEventListener('pointerdown', onBoardPointerDown, { capture: true, passive: true });
 
   if (extensionRuntime?.onMessage) {
     extensionRuntime.onMessage.addListener((message) => {

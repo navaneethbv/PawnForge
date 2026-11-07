@@ -812,3 +812,19 @@ test('the review and explorer APIs stream progress from the real engine', async 
   expect(partials.at(-1).moves).toHaveLength(20);
   expect(partials.at(-1).moves[0].deltaCp).toBe(0);
 });
+
+test('a queued partial review cannot replace a stream error', async ({ page }) => {
+  await load(page);
+  await controlledStream(page, '/api/analyze/game');
+  await page.locator('[data-tab="game-review"]').click();
+  await page.locator('#pgnInput').fill('1. e4 *');
+  await page.locator('#analyzeGameBtn').click();
+  await expect(page.locator('.game-move.pending')).toHaveCount(1);
+  await page.evaluate((fen) => {
+    window.__push({ type: 'ply', ply: { ply: 1, san: 'e4', fen, evalCp: 0, category: { key: 'best', label: 'Best' }, bestMove: null } });
+    window.__push({ type: 'error', error: 'Engine disconnected' });
+  }, afterE4);
+  await expect(page.locator('#gameMoveList')).toContainText('Engine disconnected');
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  await expect(page.locator('#gameMoveList')).toContainText('Engine disconnected');
+});

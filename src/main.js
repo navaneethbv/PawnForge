@@ -1124,11 +1124,6 @@ class EventSourcePolyfill {
   }
 }
 
-function pieceKeyForMove(fen, uciMove) {
-  const piece = new Chess(fen).get(uciMove.substring(0, 2));
-  return piece ? `${piece.color}${piece.type}` : 'wp';
-}
-
 // ── Render piece badges for all-moves explorer ──
 function renderPieceBadges(moves, fen) {
   el.pieceBadges.replaceChildren();
@@ -1194,6 +1189,7 @@ function renderMovesTable(moves, fen) {
 // ── Clear explorer UI state ──
 function clearExplorerUI() {
   explorerRequestId += 1;
+  explorerMoveLabels.clear();
   cancelExplorerRender();
   if (activeExplorerStream) {
     activeExplorerStream.close();
@@ -1210,22 +1206,30 @@ function clearExplorerUI() {
   explorerPieceFilter = null;
 }
 
+// Labels depend on the position and move, so deeper rankings can reuse them.
+const explorerMoveLabels = new Map();
 // Draws a ranked move list on the board badges and in the table (with the current filters).
 function renderExplorerMoves(moves, fen) {
   const tmpGame = new Chess(fen);
   allMovesResult = moves.map((m, i) => {
-    const row = { ...m, rank: i + 1, san: m.uci, flags: '', pieceKey: pieceKeyForMove(fen, m.uci) };
-    try {
-      const moveObj = tmpGame.move({ from: m.uci.slice(0, 2), to: m.uci.slice(2, 4), promotion: m.uci[4] });
-      if (moveObj) {
-        row.san = moveObj.san;
-        row.flags = moveObj.flags;
-        tmpGame.undo();
+    const key = `${fen}:${m.uci}`;
+    let labels = explorerMoveLabels.get(key);
+    if (!labels) {
+      const piece = tmpGame.get(m.uci.slice(0, 2));
+      labels = { san: m.uci, flags: '', pieceKey: piece ? `${piece.color}${piece.type}` : 'wp' };
+      try {
+        const move = tmpGame.move({ from: m.uci.slice(0, 2), to: m.uci.slice(2, 4), promotion: m.uci[4] });
+        if (move) {
+          labels.san = move.san;
+          labels.flags = move.flags;
+          tmpGame.undo();
+        }
+      } catch (_e) {
+        // Keep the UCI label when local rules reject an engine move.
       }
-    } catch (_e) {
-      // An engine move the local rules reject keeps its UCI label without SAN or flags.
+      explorerMoveLabels.set(key, labels);
     }
-    return row;
+    return { ...m, rank: i + 1, ...labels };
   });
   allMovesResultFen = fen;
   renderPieceBadges(allMovesResult, fen);
@@ -1519,6 +1523,7 @@ async function analyzeGame() {
     setEngineStatus('Game review complete', 'idle');
   } catch (error) {
     if (requestId !== gameReviewRequestId || error.name === 'AbortError') return;
+    cancelReviewRender();
     el.gameProgress.hidden = true;
     el.gameMoveList.hidden = false;
     el.gameMoveList.replaceChildren(errorBox(error.message));

@@ -166,7 +166,8 @@ class EnginePool {
   }
 
   // Scores every move in `moves` with one MultiPV search (one line per move), so all scores come from
-  // the same search. `onDepth(depth)` fires each time every line has finished a new depth.
+  // the same search. `onDepth(depth, rows)` fires each time every line has finished a new depth, with
+  // the scores so far, so callers can show a ranking long before the search ends.
   async analyzeAllMoves({ fen, moves, depth, signal, onDepth }) {
     if (!this.enabled) throw new Error('Stockfish is not available. Set STOCKFISH_BIN or build engine/Stockfish.');
     const key = `all:${fen}:${depth}`;
@@ -176,6 +177,7 @@ class EnginePool {
       w.send(`position fen ${fen}`);
       w.send(`go depth ${depth} searchmoves ${moves.join(' ')}`);
       const latest = new Map();
+      const rowsOf = (scores) => moves.filter((uci) => scores.has(uci)).map((uci) => ({ uci, evalCp: scores.get(uci) }));
       let completedDepth = 0;
       while (true) {
         const line = await w.waitFor(() => true, 8000);
@@ -187,10 +189,10 @@ class EnginePool {
         const lineDepth = Number(m[1]);
         if (Number(m[2]) === moves.length && lineDepth > completedDepth) {
           completedDepth = lineDepth;
-          onDepth?.(lineDepth);
+          onDepth?.(lineDepth, rowsOf(latest));
         }
       }
-      return moves.filter((uci) => latest.has(uci)).map((uci) => ({ uci, evalCp: latest.get(uci) }));
+      return rowsOf(latest);
     }, signal);
     cache.set(key, result);
     return result;
@@ -347,6 +349,16 @@ async function playMoveRequest(req, res, signal) {
   return sendJson(res, 200, { fen, mode, uci: choice?.uci ?? null, evalCp: choice?.evalCp ?? 0 });
 }
 
+// Sorts moves best first and labels each with its loss against the best one.
+function rankMoves(rows) {
+  const sorted = rows.toSorted((a, b) => b.evalCp - a.evalCp);
+  const bestEvalCp = sorted[0]?.evalCp ?? 0;
+  return sorted.map((r) => {
+    const deltaCp = Math.max(0, clampEval(bestEvalCp) - clampEval(r.evalCp));
+    return { ...r, deltaCp, category: classify(deltaCp) };
+  });
+}
+
 async function analyzeAllMovesRequest(req, res, signal) {
   if (!pool.enabled) return sendJson(res, 503, { error: 'Stockfish unavailable.' });
   const body = await readJsonObject(req, signal);
@@ -367,18 +379,17 @@ async function analyzeAllMovesRequest(req, res, signal) {
     moves: legal,
     depth,
     signal,
-    onDepth: (completed) => {
-      if (!res.destroyed) res.write(`data: ${JSON.stringify({ type: 'partial', progress: completed / depth, depth: completed, targetDepth: depth })}\n\n`);
+    onDepth: (completed, partialRows) => {
+      if (res.destroyed) return;
+      // Each completed depth carries the full ranking so far, so the page can draw it right away.
+      const partial = { type: 'partial', progress: completed / depth, depth: completed, targetDepth: depth, moves: rankMoves(partialRows) };
+      res.write(`data: ${JSON.stringify(partial)}\n\n`);
     }
   });
   if (res.destroyed) return undefined;
 
-  rows.sort((a, b) => b.evalCp - a.evalCp);
-  const bestEvalCp = rows[0]?.evalCp ?? 0;
-  const final = rows.map((r) => {
-    const deltaCp = Math.max(0, clampEval(bestEvalCp) - clampEval(r.evalCp));
-    return { ...r, deltaCp, category: classify(deltaCp) };
-  });
+  const final = rankMoves(rows);
+  const bestEvalCp = final[0]?.evalCp ?? 0;
 
   res.write(`data: ${JSON.stringify({ type: 'final', result: { fen, depth, moves: final, bestEvalCp, legalMoveCount: final.length } })}\n\n`);
   return res.end();
@@ -415,58 +426,90 @@ function normalizeGameReview(body) {
   return { normalizedFens, normalizedPreFens, moves, depth };
 }
 
-async function analyzeGameRequest(req, res, signal) {
-  if (!pool.enabled) return sendJson(res, 503, { error: 'Stockfish unavailable.' });
-  const body = await readJsonObject(req, signal);
-  const { normalizedFens, normalizedPreFens, moves, depth } = normalizeGameReview(body);
+// One reviewed ply from the evaluations of the positions before and after it.
+function reviewPly(i, { normalizedFens, normalizedPreFens, moves }, evals) {
+  const fen = normalizedFens[i];
+  const evalAfterMove = evals.get(fen).evalCp;
+  const preFen = normalizedPreFens.at(i);
+  const before = preFen ? evals.get(preFen) : null;
+  // The pre-move eval is from the mover's view and the post-move eval from
+  // the opponent's, so their sum is the mover's loss versus the best move.
+  const deltaCp = before ? Math.max(0, clampEval(before.evalCp) + clampEval(evalAfterMove)) : 0;
+  return {
+    ply: i + 1,
+    san: moves.at(i) || `ply-${i + 1}`,
+    fen,
+    mover: preFen ? preFen.split(' ')[1] : null,
+    evalCp: evalAfterMove,
+    deltaCp,
+    accuracy: before ? Math.round(moveAccuracy(before.evalCp, -evalAfterMove) * 10) / 10 : null,
+    category: classify(deltaCp),
+    // The engine's choice in the position before this move, for "what was better" and puzzles.
+    bestMove: before?.best ? { uci: before.best.uci, evalCp: before.best.evalCp, pv: before.best.pv.split(' ').slice(0, 8) } : null
+  };
+}
 
+// Reviews a game. `onPly(ply)` fires as soon as both positions around a move are analysed, which is
+// out of order because the engines work on different stretches of the game at once.
+async function reviewGame(review, signal, onPly) {
+  const { normalizedFens, normalizedPreFens, moves, depth } = review;
   // Each pre-move position is usually the previous post-move position, so analyze every distinct FEN
   // once. The positions are split into contiguous runs in game order, one run per engine, so each
   // engine searches neighbouring positions and reuses its hash from the previous one.
   const uniqueFens = [...new Set([...normalizedPreFens.filter(Boolean), ...normalizedFens])];
   const runs = contiguousRuns(uniqueFens, pool.size);
   const evals = new Map();
+  const plies = new Array(normalizedFens.length).fill(null);
+  // Which plies each position completes: the move that reached it and the move played from it.
+  const pliesByFen = new Map();
+  const track = (fen, index) => { if (fen) pliesByFen.set(fen, [...(pliesByFen.get(fen) ?? []), index]); };
+  normalizedFens.forEach((fen, i) => { track(fen, i); track(normalizedPreFens.at(i), i); });
+
   await mapWithConcurrency(runs, runs.length, async (run, runIndex) => {
     for (const fen of run) {
       signal.throwIfAborted();
       const analysis = await pool.analyzePosition({ fen, depth, multipv: 1, worker: pool.workers[runIndex], signal });
       evals.set(fen, { evalCp: analysis.bestEvalCp, best: analysis.topMoves[0] ?? null });
+      for (const i of pliesByFen.get(fen) ?? []) {
+        const preFen = normalizedPreFens.at(i);
+        if (plies[i] || !evals.has(normalizedFens[i]) || (preFen && !evals.has(preFen))) continue;
+        plies[i] = reviewPly(i, review, evals);
+        onPly?.(plies[i]);
+      }
     }
   });
 
   const sideAccuracies = { w: [], b: [] };
-  const plies = normalizedFens.map((fen, i) => {
-    const evalAfterMove = evals.get(fen).evalCp;
-    const preFen = normalizedPreFens.at(i);
-    const before = preFen ? evals.get(preFen) : null;
-    // The pre-move eval is from the mover's view and the post-move eval from
-    // the opponent's, so their sum is the mover's loss versus the best move.
-    const deltaCp = before ? Math.max(0, clampEval(before.evalCp) + clampEval(evalAfterMove)) : 0;
-    const accuracy = before ? Math.round(moveAccuracy(before.evalCp, -evalAfterMove) * 10) / 10 : null;
-    if (accuracy !== null) sideAccuracies[preFen.split(' ')[1]].push(accuracy);
-    return {
-      ply: i + 1,
-      san: moves.at(i) || `ply-${i + 1}`,
-      fen,
-      evalCp: evalAfterMove,
-      deltaCp,
-      accuracy,
-      category: classify(deltaCp),
-      // The engine's choice in the position before this move, for "what was better" and puzzles.
-      bestMove: before?.best ? { uci: before.best.uci, evalCp: before.best.evalCp, pv: before.best.pv.split(' ').slice(0, 8) } : null
-    };
-  });
-
-  const turningPoints = plies.filter((p) => p.deltaCp >= 150);
-  const evalGraph = plies.map((p) => ({ ply: p.ply, evalCp: p.evalCp }));
-  return sendJson(res, 200, {
+  for (const p of plies) if (p.accuracy !== null) sideAccuracies[p.mover].push(p.accuracy);
+  return {
     opening: detectOpening(moves, { startFen: normalizedPreFens[0] || START_FEN }),
     accuracy: { white: gameAccuracy(sideAccuracies.w), black: gameAccuracy(sideAccuracies.b) },
     plyCount: plies.length,
     plies,
-    turningPoints,
-    evalGraph
+    turningPoints: plies.filter((p) => p.deltaCp >= 150),
+    evalGraph: plies.map((p) => ({ ply: p.ply, evalCp: p.evalCp }))
+  };
+}
+
+// Returns the whole review as JSON, or with `"stream": true` as server-sent events: one `ply` event
+// per move as it is ready, then a `final` event with the complete review.
+async function analyzeGameRequest(req, res, signal) {
+  if (!pool.enabled) return sendJson(res, 503, { error: 'Stockfish unavailable.' });
+  const body = await readJsonObject(req, signal);
+  const review = normalizeGameReview(body);
+  if (body.stream !== true) return sendJson(res, 200, await reviewGame(review, signal));
+
+  res.writeHead(200, {
+    ...SECURITY_HEADERS,
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive'
   });
+  const send = (event) => { if (!res.destroyed) res.write(`data: ${JSON.stringify(event)}\n\n`); };
+  send({ type: 'start', plyCount: review.normalizedFens.length });
+  const result = await reviewGame(review, signal, (ply) => send({ type: 'ply', ply }));
+  send({ type: 'final', result });
+  return res.end();
 }
 
 async function dispatchApi(req, res, signal) {

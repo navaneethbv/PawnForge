@@ -3,8 +3,14 @@ const requests = new Map();
 // Only forward settings the overlay offers; anything else falls back to the fast default.
 function engineSettings(settings) {
   const depth = [8, 12, 16, 20].includes(settings?.depth) ? settings.depth : 8;
+  // Piece move scores: every legal move of the piece on this square, capped for a quick reply.
+  if (typeof settings?.square === 'string' && /^[a-h][1-8]$/.test(settings.square)) return { depth: Math.min(depth, 16), square: settings.square };
   return { depth, multiPv: 5 };
 }
+
+// Each tab has one request slot per channel, so piece move scores never cancel the main analysis.
+const CHANNELS = ['analysis', 'piece'];
+const slotKey = (tabId, channel) => `${tabId}:${CHANNELS.includes(channel) ? channel : 'analysis'}`;
 
 // Bot-game play settings mirror the overlay's choices; anything else is not relayed.
 const PLAY_ELOS = [1320, 1600, 1900, 2200, 2500];
@@ -18,22 +24,22 @@ function playSettings(play) {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === 'cancel-analysis' && sender.tab?.id) {
-    const request = requests.get(sender.tab.id);
+    const request = requests.get(slotKey(sender.tab.id, message.channel));
     if (request && request.requestId === message.requestId) request.controller.abort();
     return false;
   }
   if (message?.type !== 'analyze-position' || !sender.tab?.id) return undefined;
-  const tabId = sender.tab.id;
+  const key = slotKey(sender.tab.id, message.channel);
   let url;
   try {
     url = new URL(message.endpoint);
     if (url.protocol !== 'http:' || url.username || url.password || url.pathname !== '/api/analyze/position' || url.search || url.hash) throw new Error('Only the local PawnForge analysis endpoint is allowed.');
   } catch (error) { sendResponse({ error: error.message }); return false; }
   if (['127.0.0.1', 'localhost'].includes(url.hostname)) {
-    requests.get(tabId)?.controller.abort();
+    requests.get(key)?.controller.abort();
     const controller = new AbortController();
     const request = { controller, requestId: message.requestId };
-    requests.set(tabId, request);
+    requests.set(key, request);
     const timer = setTimeout(() => controller.abort(), 20000);
     const play = message.payload?.play ? playSettings(message.payload.play) : null;
     const localEndpoint = new URL(play ? 'http://127.0.0.1/api/play/move' : 'http://127.0.0.1/api/analyze/position');
@@ -51,14 +57,44 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse(response.ok ? { data } : { error: data.error || `HTTP ${response.status}` });
     }).catch((error) => sendResponse({ error: error.message })).finally(() => {
       clearTimeout(timer);
-      if (requests.get(tabId) === request) requests.delete(tabId);
+      if (requests.get(key) === request) requests.delete(key);
     });
     return true;
   }
   sendResponse({ error: 'Only the local PawnForge analysis endpoint is allowed.' });
   return false;
 });
-chrome.tabs.onRemoved.addListener((tabId) => { requests.get(tabId)?.controller.abort(); requests.delete(tabId); });
+chrome.tabs.onRemoved.addListener((tabId) => {
+  for (const channel of CHANNELS) {
+    const key = slotKey(tabId, channel);
+    requests.get(key)?.controller.abort();
+    requests.delete(key);
+  }
+});
+
+// Piece move score site rules live in site-rules.json (see extension/README.md); the overlay asks for them.
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type !== 'site-rules') return undefined;
+  fetch(chrome.runtime.getURL('site-rules.json'))
+    .then((response) => response.json())
+    .then((rules) => sendResponse({ rules }))
+    .catch(() => sendResponse({ rules: null }));
+  return true;
+});
+
+// Serialize claims so two tabs enabling scoring together cannot both show the reminder.
+let fairPlayReminderClaim = Promise.resolve(false);
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type !== 'claim-fair-play-reminder' || !sender.tab?.id) return undefined;
+  fairPlayReminderClaim = fairPlayReminderClaim.then(async () => {
+    const { fairPlayReminderShown } = await chrome.storage.local.get('fairPlayReminderShown');
+    if (fairPlayReminderShown) return false;
+    await chrome.storage.local.set({ fairPlayReminderShown: true });
+    return true;
+  }).catch(() => false);
+  void fairPlayReminderClaim.then(sendResponse);
+  return true;
+});
 
 // Runs in the page's MAIN world, where site objects such as chess.com's board element are visible.
 // Injected functions are serialised, so helpers must live inside this function.

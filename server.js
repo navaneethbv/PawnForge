@@ -116,15 +116,16 @@ class EnginePool {
     return w;
   }
 
-  async analyzePosition({ fen, depth = 12, multipv = 3, signal }) {
+  // `searchMoves` limits the search to those root moves (UCI "searchmoves"); each still gets its own line.
+  async analyzePosition({ fen, depth = 12, multipv = 3, searchMoves = [], signal }) {
     if (!this.enabled) throw new Error('Stockfish is not available. Set STOCKFISH_BIN or build engine/Stockfish.');
-    const key = `pos:${fen}:${depth}:${multipv}`;
+    const key = `pos:${fen}:${depth}:${multipv}:${searchMoves.join(',')}`;
     if (cache.has(key)) return cache.get(key);
 
     const result = await this.acquire().run(async (w) => {
       w.send(`setoption name MultiPV value ${multipv}`);
       w.send(`position fen ${fen}`);
-      w.send(`go depth ${depth}`);
+      w.send(searchMoves.length ? `go depth ${depth} searchmoves ${searchMoves.join(' ')}` : `go depth ${depth}`);
 
       const lines = [];
       let checkmateScore = null;
@@ -278,13 +279,24 @@ async function analyzePositionRequest(req, res, signal) {
   if (!pool.enabled) return sendJson(res, 503, { error: 'Stockfish unavailable.' });
   const body = await readJsonObject(req, signal);
   const fen = validateFen(body.fen);
+  const depth = requireInteger(body.settings?.depth, { name: 'depth', defaultValue: 12, min: 1, max: 20 });
+  if (body.settings?.square !== undefined) return sendJson(res, 200, await analyzePieceMoves(fen, body.settings.square, depth, signal));
   const result = await pool.analyzePosition({
     fen,
     signal,
-    depth: requireInteger(body.settings?.depth, { name: 'depth', defaultValue: 12, min: 1, max: 20 }),
+    depth,
     multipv: requireInteger(body.settings?.multiPv, { name: 'multiPv', defaultValue: 3, min: 1, max: 5 })
   });
   return sendJson(res, 200, result);
+}
+
+// Scores every legal move of the piece on `square` in one search: one MultiPV line per move.
+async function analyzePieceMoves(fen, square, depth, signal) {
+  if (typeof square !== 'string' || !/^[a-h][1-8]$/.test(square)) throw new HttpError(400, 'square must be a board square such as e2.');
+  const moves = (await pool.legalMoves(fen, signal)).filter((uci) => uci.startsWith(square));
+  if (moves.length === 0) return { fen, square, moves: [] };
+  const { topMoves } = await pool.analyzePosition({ fen, depth, multipv: moves.length, searchMoves: moves, signal });
+  return { fen, square, moves: topMoves.map(({ uci, evalCp, pv }) => ({ uci, evalCp, pv })) };
 }
 
 const PLAY_MODES = new Set(['elo', 'full', 'lose']);

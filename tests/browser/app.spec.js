@@ -656,3 +656,17 @@ test('play endpoint answers every mode with a legal move from the real engine', 
     expect((await request.post('/api/play/move', { data })).status()).toBe(400);
   }
 });
+
+test('real engine scores every legal move of one piece', async ({ request }) => {
+  const knight = await request.post('/api/analyze/position', { data: { fen: start, settings: { depth: 6, square: 'g1' } } });
+  expect(knight.ok()).toBe(true);
+  const { square, moves } = await knight.json();
+  expect(square).toBe('g1');
+  expect(moves.map((move) => move.uci).toSorted((a, b) => a.localeCompare(b))).toEqual(['g1f3', 'g1h3']);
+  for (const move of moves) expect(Number.isFinite(move.evalCp)).toBe(true);
+  // A blocked piece has no moves, and anything that is not a square is rejected.
+  const rook = await request.post('/api/analyze/position', { data: { fen: start, settings: { depth: 6, square: 'a1' } } });
+  expect((await rook.json()).moves).toEqual([]);
+  const invalid = await request.post('/api/analyze/position', { data: { fen: start, settings: { square: 'g1 searchmoves' } } });
+  expect(invalid.status()).toBe(400);
+});

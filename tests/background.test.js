@@ -65,3 +65,28 @@ test('bot-game play requests go to the play endpoint with only the offered setti
   // Settings the overlay does not offer fall back to normal analysis.
   assert.deepEqual(calls[2], { url: 'http://127.0.0.1:4189/api/analyze/position', body: { fen, settings: { depth: 12, multiPv: 5 } } });
 });
+
+test('the fair-play reminder is claimed once across tabs and worker restarts', async () => {
+  const source = await readFile('background.js', 'utf8');
+  const stored = {};
+  function startWorker() {
+    const listeners = [];
+    const chrome = {
+      runtime: { onMessage: { addListener: listener => listeners.push(listener) } },
+      tabs: { onRemoved: { addListener: () => {} } },
+      action: { onClicked: { addListener: () => {} } },
+      storage: { local: {
+        get: async () => ({ ...stored }),
+        set: async (values) => { Object.assign(stored, values); }
+      } }
+    };
+    vm.runInNewContext(source, { chrome });
+    return (id) => new Promise(resolve => {
+      const handled = listeners.some(listener => listener({ type: 'claim-fair-play-reminder' }, { tab: { id } }, resolve) === true);
+      assert.ok(handled);
+    });
+  }
+  const claim = startWorker();
+  assert.deepEqual(await Promise.all([claim(1), claim(2)]), [true, false]);
+  assert.equal(await startWorker()(3), false);
+});

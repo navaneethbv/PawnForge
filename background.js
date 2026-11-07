@@ -127,7 +127,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 chrome.action.onClicked.addListener(async (tab) => {
-  if (!tab.id || !/^https?:\/\//.test(tab.url || '')) return;
+  if (!tab.id || !/^https?:\/\/([\w-]+\.)*(chess\.com|lichess\.org)(?::\d+)?\//.test(tab.url || '')) return;
   try {
     await chrome.tabs.sendMessage(tab.id, { type: 'toggle-overlay' });
   } catch (_error) {

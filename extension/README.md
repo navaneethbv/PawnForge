@@ -53,9 +53,9 @@ A canvas-only board without a page FEN needs a manually pasted FEN because brows
 
 ## Scope and privacy
 
-Automatic injection and page access cover HTTP and HTTPS websites.
+Automatic injection and page access are limited to Chess.com and Lichess, including their subdomains.
 The extension toolbar can toggle the overlay on those websites.
-Chess.com and Lichess have site-specific readers; ChessTempo and chess.org use generic DOM detection or a manually pasted FEN.
+Chess.com and Lichess have site-specific readers, with generic DOM detection or a manually pasted FEN as fallbacks.
 Live compatibility with every page on those sites is not guaranteed.
 Chrome internal pages and other browser-protected pages cannot run content scripts.
 Position data is sent only to the configured loopback PawnForge endpoint through the extension background worker.

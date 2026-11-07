@@ -62,7 +62,7 @@ test('unpacked extension relays foreign-page FEN analysis to the local API', asy
   } finally { await context.close(); }
 });
 
-test('automatic injection works across HTTP and HTTPS websites', async () => {
+test('automatic injection is limited to Chess.com and Lichess', async () => {
   const extension = resolve('.');
   const context = await chromium.launchPersistentContext('', {
     channel: 'chromium', headless: true,
@@ -71,19 +71,20 @@ test('automatic injection works across HTTP and HTTPS websites', async () => {
   try {
     const page = await context.newPage();
     await page.route('**/*', route => route.fulfill({ contentType: 'text/html', body: '<!doctype html><body>No board</body>' }));
-    for (const domain of ['www.chess.com', 'lichess.org', 'www.chesstempo.com', 'chess.org']) {
+    for (const domain of ['chess.com', 'www.chess.com', 'lichess.org', 'www.lichess.org']) {
       await page.goto(`https://${domain}/`);
       await expect(page.locator('#pawnforge-hud')).toBeVisible();
     }
-    for (const url of ['https://example.org/', 'http://chess-club.example/', 'https://chess.com.example.org/']) {
+    for (const url of ['https://example.org/', 'http://chess-club.example/', 'https://chess.com.example.org/', 'https://lichess.org.example.org/', 'https://chesstempo.com/', 'https://chess.org/']) {
       await page.goto(url);
-      await expect(page.locator('#pawnforge-hud')).toBeVisible();
+      await page.waitForTimeout(300);
+      await expect(page.locator('#pawnforge-hud')).toHaveCount(0);
     }
     const worker = context.serviceWorkers()[0];
     const permissions = await worker.evaluate(() => chrome.permissions.getAll());
     expect(permissions.origins).not.toContain('<all_urls>');
-    expect(permissions.origins).toContain('http://*/*');
-    expect(permissions.origins).toContain('https://*/*');
+    expect(permissions.origins).not.toContain('http://*/*');
+    expect(permissions.origins).not.toContain('https://*/*');
   } finally { await context.close(); }
 });
 

@@ -218,7 +218,7 @@ Keyboard shortcuts: `←`/`→`/`Home`/`End` navigate, `F` flips the board, `Z` 
 
 The repository root also contains a Manifest V3 Chrome extension.
 Start PawnForge with `npm start`, open `chrome://extensions`, enable Developer mode, and load this repository directory as an unpacked extension.
-The Coach overlay loads on HTTP and HTTPS websites, and prefers a complete page FEN.
+The Coach overlay loads only on Chess.com and Lichess, including their subdomains, and prefers a complete page FEN.
 It does not request access to unrelated websites.
 ChessTempo and chess.org use generic board detection or manual FEN input; site-specific automatic detection is covered for Chess.com and Lichess.
 It reads the exact position from chess.com boards and from the lichess analysis board, so those need no approximation.

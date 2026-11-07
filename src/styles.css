@@ -1294,6 +1294,10 @@ label.field-label { margin-bottom: 6px; }
 .game-move.cat-mistake { --cat-color: var(--mistake); color: #fb923c; font-weight: 600; }
 .game-move.cat-blunder { --cat-color: var(--blunder); color: #f87171; font-weight: 700; }
 .game-move.active { background: var(--accent-fill); color: #fff; }
+/* A move whose analysis is still streaming in. */
+.game-move.pending { color: var(--text-dim); cursor: progress; animation: game-move-pending 1.2s ease-in-out infinite alternate; }
+@keyframes game-move-pending { from { opacity: 0.45; } to { opacity: 0.9; } }
+@media (prefers-reduced-motion: reduce) { .game-move.pending { animation: none; opacity: 0.6; } }
 /* Moves still in opening theory, and the move that left it. */
 .game-move.book { font-style: italic; }
 .game-move.book-exit { box-shadow: inset 0 -2px 0 var(--accent); }

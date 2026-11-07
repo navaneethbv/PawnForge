@@ -1194,6 +1194,7 @@ function renderMovesTable(moves, fen) {
 // ── Clear explorer UI state ──
 function clearExplorerUI() {
   explorerRequestId += 1;
+  cancelExplorerRender();
   if (activeExplorerStream) {
     activeExplorerStream.close();
     activeExplorerStream = null;
@@ -1207,6 +1208,50 @@ function clearExplorerUI() {
   allMovesResult = [];
   allMovesResultFen = null;
   explorerPieceFilter = null;
+}
+
+// Draws a ranked move list on the board badges and in the table (with the current filters).
+function renderExplorerMoves(moves, fen) {
+  const tmpGame = new Chess(fen);
+  allMovesResult = moves.map((m, i) => {
+    const row = { ...m, rank: i + 1, san: m.uci, flags: '', pieceKey: pieceKeyForMove(fen, m.uci) };
+    try {
+      const moveObj = tmpGame.move({ from: m.uci.slice(0, 2), to: m.uci.slice(2, 4), promotion: m.uci[4] });
+      if (moveObj) {
+        row.san = moveObj.san;
+        row.flags = moveObj.flags;
+        tmpGame.undo();
+      }
+    } catch (_e) {
+      // An engine move the local rules reject keeps its UCI label without SAN or flags.
+    }
+    return row;
+  });
+  allMovesResultFen = fen;
+  renderPieceBadges(allMovesResult, fen);
+  renderBoardBadges(allMovesResult, fen);
+  el.explorerFilters.hidden = false;
+  applyExplorerFilters();
+}
+
+// Partial rankings can arrive faster than the screen refreshes; draw at most one per frame.
+let pendingExplorerFrame = 0;
+let pendingExplorerMoves = null;
+function scheduleExplorerRender(moves, fen) {
+  pendingExplorerMoves = { moves, fen };
+  if (pendingExplorerFrame) return;
+  pendingExplorerFrame = requestAnimationFrame(() => {
+    pendingExplorerFrame = 0;
+    const pending = pendingExplorerMoves;
+    pendingExplorerMoves = null;
+    if (pending && game.fen() === pending.fen) renderExplorerMoves(pending.moves, pending.fen);
+  });
+}
+
+function cancelExplorerRender() {
+  if (pendingExplorerFrame) cancelAnimationFrame(pendingExplorerFrame);
+  pendingExplorerFrame = 0;
+  pendingExplorerMoves = null;
 }
 
 // ── All-moves explorer with streaming ──
@@ -1248,31 +1293,14 @@ function runAllMoves() {
       const pct = Math.round(data.progress * 100);
       el.explorerProgressFill.style.width = `${pct}%`;
       el.explorerProgressText.textContent = `${total} moves · depth ${data.depth} / ${data.targetDepth}`;
+      // Each completed depth carries the whole ranking so far: show it now, refine it as depth grows.
+      if (Array.isArray(data.moves) && data.moves.length) scheduleExplorerRender(data.moves, currentFen);
     }
 
     if (data.type === 'final') {
-      const tmpGame = new Chess(currentFen);
-      allMovesResult = data.result.moves.map((m, i) => {
-        const row = { ...m, rank: i + 1, san: m.uci, flags: '', pieceKey: pieceKeyForMove(currentFen, m.uci) };
-        try {
-          const moveObj = tmpGame.move({ from: m.uci.slice(0, 2), to: m.uci.slice(2, 4), promotion: m.uci[4] });
-          if (moveObj) {
-            row.san = moveObj.san;
-            row.flags = moveObj.flags;
-            tmpGame.undo();
-          }
-        } catch (_e) {
-          // An engine move the local rules reject keeps its UCI label without SAN or flags.
-        }
-        return row;
-      });
-      allMovesResultFen = currentFen;
-
-      renderPieceBadges(allMovesResult, currentFen);
-      renderBoardBadges(allMovesResult, currentFen);
-      el.explorerFilters.hidden = false;
+      cancelExplorerRender();
+      renderExplorerMoves(data.result.moves, currentFen);
       el.explorerProgress.hidden = true;
-      applyExplorerFilters();
       setEngineStatus(`Explorer complete · ${allMovesResult.length} moves`, 'idle');
       es.close();
       if (activeExplorerStream === es) activeExplorerStream = null;
@@ -1281,6 +1309,7 @@ function runAllMoves() {
 
   es.onerror = (error) => {
     if (requestId !== explorerRequestId) return;
+    cancelExplorerRender();
     el.allMovesTable.replaceChildren(errorBox(error?.message || 'Streaming failed'));
     el.explorerProgress.hidden = true;
     setEngineStatus('Explorer failed', 'error');
@@ -1309,6 +1338,9 @@ function drawEvalGraph(plies, activePly = -1) {
   ctx.clearRect(0, 0, w, height);
   if (!plies || plies.length === 0) return;
 
+  // While a review streams in, some plies are not analysed yet; draw the ones that are.
+  const known = plies.flatMap((p, i) => (p ? [[i, p]] : []));
+  if (known.length === 0) return;
   const maxEval = 500; // ±5 pawns fills the graph
   const xAt = (i) => pad.left + (plies.length === 1 ? gw / 2 : (i * gw) / (plies.length - 1));
   const yAt = (p) => {
@@ -1321,9 +1353,9 @@ function drawEvalGraph(plies, activePly = -1) {
   ctx.fillStyle = '#1f2633';
   ctx.fillRect(pad.left, pad.top, gw, gh);
   ctx.beginPath();
-  ctx.moveTo(xAt(0), pad.top + gh);
-  plies.forEach((p, i) => ctx.lineTo(xAt(i), yAt(p)));
-  ctx.lineTo(xAt(plies.length - 1), pad.top + gh);
+  ctx.moveTo(xAt(known[0][0]), pad.top + gh);
+  known.forEach(([i, p]) => ctx.lineTo(xAt(i), yAt(p)));
+  ctx.lineTo(xAt(known.at(-1)[0]), pad.top + gh);
   ctx.closePath();
   ctx.fillStyle = 'rgba(238, 241, 245, 0.88)';
   ctx.fill();
@@ -1346,14 +1378,14 @@ function drawEvalGraph(plies, activePly = -1) {
 
   // Evaluation curve.
   ctx.beginPath();
-  plies.forEach((p, i) => (i === 0 ? ctx.moveTo(xAt(i), yAt(p)) : ctx.lineTo(xAt(i), yAt(p))));
+  known.forEach(([i, p], k) => (k === 0 ? ctx.moveTo(xAt(i), yAt(p)) : ctx.lineTo(xAt(i), yAt(p))));
   ctx.strokeStyle = '#3b82f6';
   ctx.lineWidth = 1.75;
   ctx.stroke();
 
   // Markers for inaccuracies, mistakes and blunders.
   const markerColors = { inaccuracy: '#f59e0b', mistake: '#f97316', blunder: '#ef4444' };
-  plies.forEach((p, i) => {
+  known.forEach(([i, p]) => {
     const color = markerColors[p.category?.key];
     if (!color) return;
     ctx.beginPath();
@@ -1366,7 +1398,7 @@ function drawEvalGraph(plies, activePly = -1) {
   });
 
   // Active ply marker.
-  if (activePly >= 0 && activePly < plies.length) {
+  if (activePly >= 0 && activePly < plies.length && plies.at(activePly)) {
     const x = xAt(activePly);
     ctx.strokeStyle = 'rgba(96, 165, 250, 0.8)';
     ctx.lineWidth = 1;
@@ -1402,6 +1434,7 @@ function drawEvalGraph(plies, activePly = -1) {
 // ── Game analysis ──
 function clearGameReview() {
   gameReviewRequestId += 1;
+  cancelReviewRender();
   gameReviewController?.abort();
   gameReviewController = null;
   gameReviewData = null;
@@ -1449,18 +1482,31 @@ async function analyzeGame() {
     el.gameProgress.hidden = false;
     el.gameProgressText.textContent = `Analyzing ${hist.length} plies…`;
 
-    const data = await postJson('/api/analyze/game', {
-      pgn: el.pgnInput.value,
-      moves: hist.map((m) => m.san),
-      fenSequence,
-      preMoveSequence,
-      settings: { depth: Number($('gameDepthSelect').value) }
-    }, controller.signal);
-    if (requestId !== gameReviewRequestId) return;
+    // Show the moves at once; each one fills in as soon as the server has analysed it.
     gameReviewFens = fenSequence;
     gameReviewPreFens = preMoveSequence;
     gameReviewHistory = hist;
     gameReviewPly = -1;
+    gameReviewData = { plies: new Array(hist.length).fill(null), opening: null };
+    el.evalGraphContainer.hidden = false;
+    renderGameMoveList(gameReviewData);
+    let analysed = 0;
+    const data = await streamGameReview({
+      pgn: el.pgnInput.value,
+      moves: hist.map((m) => m.san),
+      fenSequence,
+      preMoveSequence,
+      settings: { depth: Number($('gameDepthSelect').value) },
+      stream: true
+    }, controller.signal, (ply) => {
+      if (requestId !== gameReviewRequestId) return;
+      gameReviewData.plies[ply.ply - 1] = ply;
+      analysed += 1;
+      el.gameProgressText.textContent = `Analyzed ${analysed} / ${hist.length} plies…`;
+      scheduleReviewRender();
+    });
+    if (requestId !== gameReviewRequestId) return;
+    cancelReviewRender();
     gameReviewData = data;
 
     el.gameProgress.hidden = true;
@@ -1482,6 +1528,59 @@ async function analyzeGame() {
   }
 }
 
+// Posts a review with `stream: true` and reports each analysed ply. A server (or test double) that
+// answers with plain JSON is treated as the final result.
+async function streamGameReview(body, signal, onPly) {
+  const res = await fetch('/api/analyze/game', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal
+  });
+  if (!(res.headers.get('content-type') || '').includes('text/event-stream')) {
+    let json = null;
+    try { json = await res.json(); } catch (_e) {}
+    if (!res.ok) throw new Error(json?.error || `Request failed (HTTP ${res.status})`);
+    if (!json) throw new Error('The server returned an invalid response.');
+    return json;
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) throw new Error('The review stream ended before the analysis finished. Try again.');
+    buffer += decoder.decode(value, { stream: true });
+    let end;
+    while ((end = buffer.indexOf('\n\n')) >= 0) {
+      const chunk = buffer.slice(0, end);
+      buffer = buffer.slice(end + 2);
+      if (!chunk.startsWith('data: ')) continue;
+      const event = JSON.parse(chunk.slice(6));
+      if (event.type === 'error') throw new Error(event.error || 'Review failed');
+      if (event.type === 'ply') onPly(event.ply);
+      if (event.type === 'final') return event.result;
+    }
+  }
+}
+
+// Plies can arrive faster than the screen refreshes; redraw the list and graph at most once a frame.
+let pendingReviewFrame = 0;
+function scheduleReviewRender() {
+  if (pendingReviewFrame) return;
+  pendingReviewFrame = requestAnimationFrame(() => {
+    pendingReviewFrame = 0;
+    if (!gameReviewData) return;
+    renderGameMoveList(gameReviewData);
+    drawEvalGraph(gameReviewData.plies, gameReviewPly);
+  });
+}
+
+function cancelReviewRender() {
+  if (pendingReviewFrame) cancelAnimationFrame(pendingReviewFrame);
+  pendingReviewFrame = 0;
+}
+
 function renderGameMoveList(data) {
   const rows = [];
   let row = null;
@@ -1494,6 +1593,11 @@ function renderGameMoveList(data) {
       if (blackMove) row.appendChild(h('span'));
       rows.push(row);
     }
+    if (!p) {
+      // Still being analysed: show the move so the list is complete, but it cannot be opened yet.
+      row.appendChild(h('button', { type: 'button', class: 'game-move pending', dataset: { ply: String(i) }, disabled: true, title: 'Analysing…' }, gameReviewHistory.at(i)?.san ?? '…'));
+      return;
+    }
     const whiteEval = toWhiteRelativeEval(p.evalCp, p.fen);
     const book = bookStatus(data, i);
     const better = betterMoveSan(p, i);
@@ -1504,7 +1608,7 @@ function renderGameMoveList(data) {
     if (book === 'exit') titleParts.push('left book');
     row.appendChild(h('button', {
       type: 'button',
-      class: `game-move cat-${p.category.key}${book === 'book' ? ' book' : ''}${book === 'exit' ? ' book-exit' : ''}`,
+      class: `game-move cat-${p.category.key}${book === 'book' ? ' book' : ''}${book === 'exit' ? ' book-exit' : ''}${i === gameReviewPly ? ' active' : ''}`,
       dataset: { ply: String(i) },
       title: titleParts.join(' · '),
       onclick: () => navigateToGamePly(i)
@@ -1515,7 +1619,7 @@ function renderGameMoveList(data) {
 }
 
 function navigateToGamePly(ply) {
-  if (!gameReviewData || ply < 0 || ply >= gameReviewData.plies.length) return;
+  if (!gameReviewData || ply < 0 || ply >= gameReviewData.plies.length || !gameReviewData.plies.at(ply)) return;
 
   gameReviewPly = ply;
   const fen = gameReviewFens.at(ply);
@@ -1599,8 +1703,8 @@ function moveLabel(index) {
 
 // 'book' for moves still in opening theory, 'exit' for the move that left it, otherwise null.
 function bookStatus(data, index) {
-  const exitPly = data.opening.bookExitPly;
-  if (data.opening.eco === null || exitPly === undefined) return null;
+  const exitPly = data.opening?.bookExitPly;
+  if (!data.opening || data.opening.eco === null || exitPly === undefined) return null;
   if (exitPly === null || index + 1 < exitPly) return 'book';
   return index + 1 === exitPly ? 'exit' : null;
 }

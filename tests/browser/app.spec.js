@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
+import { Chess } from '../../vendor/chess.js';
 const start = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
 const afterE4 = 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1';
 async function load(page) {
@@ -717,4 +718,97 @@ test('game review shows accuracy, book exit and the better move, and turns blund
   await drag(page, puzzle.solution.slice(0, 2), puzzle.solution.slice(2, 4));
   await expect(page.locator('#puzzleStatus')).toContainText(`Correct: ${puzzle.solutionSan}`);
   expect((await page.evaluate(() => JSON.parse(localStorage.getItem('pawnforge.mistakePuzzles')))).find((p) => p.fen === puzzle.fen).solved).toBe(true);
+});
+
+// Replaces fetch for one API path with a stream the test feeds event by event.
+async function controlledStream(page, path) {
+  await page.evaluate((streamPath) => {
+    const original = window.fetch;
+    window.fetch = (url, options) => {
+      if (!String(url).includes(streamPath)) return original(url, options);
+      const encoder = new TextEncoder();
+      const body = new ReadableStream({
+        start(controller) {
+          window.__push = (event) => controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+          window.__end = () => controller.close();
+        }
+      });
+      return Promise.resolve(new Response(body, { headers: { 'Content-Type': 'text/event-stream' } }));
+    };
+  }, path);
+  return (event) => page.evaluate((e) => window.__push(e), event);
+}
+
+test('game review fills in move by move while the analysis streams', async ({ page }) => {
+  await load(page);
+  const push = await controlledStream(page, '/api/analyze/game');
+  const replay = new Chess();
+  const plies = ['e4', 'e5', 'Nf3'].map((san, i) => {
+    replay.move(san);
+    return { ply: i + 1, san, fen: replay.fen(), mover: i % 2 ? 'b' : 'w', evalCp: i % 2 ? 30 : -30, deltaCp: 0, accuracy: 100, category: { key: 'best', label: 'Best' }, bestMove: null };
+  });
+  await page.locator('[data-tab="game-review"]').click();
+  await page.locator('#pgnInput').fill('1. e4 e5 2. Nf3 *');
+  await page.locator('#analyzeGameBtn').click();
+
+  // Every move is listed straight away, waiting for its analysis.
+  await expect(page.locator('.game-move.pending')).toHaveCount(3);
+  await push({ type: 'start', plyCount: 3 });
+  await push({ type: 'ply', ply: plies[1] });
+  await expect(page.locator('.game-move.pending')).toHaveCount(2);
+  await expect(page.locator('.game-move', { hasText: 'e5' })).toHaveClass(/cat-best/);
+  await expect(page.locator('#gameProgressText')).toHaveText('Analyzed 1 / 3 plies…');
+  // An analysed move can already be opened; one still pending cannot.
+  await expect(page.locator('.game-move', { hasText: 'Nf3' })).toBeDisabled();
+  await page.locator('.game-move', { hasText: 'e5' }).click();
+  await expect(page.locator('#board .square-e5 img')).toHaveCount(1);
+
+  await push({ type: 'ply', ply: plies[0] });
+  await push({ type: 'ply', ply: plies[2] });
+  await push({ type: 'final', result: {
+    opening: { eco: 'C40', name: "King's Knight Opening", bookPlyRange: [1, 3], bookExitPly: null, continuations: [] },
+    accuracy: { white: 100, black: 100 }, plyCount: 3, plies, turningPoints: [], evalGraph: []
+  } });
+  await expect(page.locator('.game-move.pending')).toHaveCount(0);
+  await expect(page.locator('.summary-card').filter({ hasText: 'White accuracy' })).toContainText('100%');
+  await expect(page.locator('#gameProgress')).toBeHidden();
+});
+
+test('the explorer shows each depth\'s ranking before the search finishes', async ({ page }) => {
+  await load(page);
+  const push = await controlledStream(page, '/api/analyze/all-moves');
+  const ranked = (best) => ['e2e4', 'd2d4', 'g1f3'].map((uci, i) => ({ uci, evalCp: best - i * 40, deltaCp: i * 40, category: { key: i ? 'good' : 'best', label: i ? 'Good' : 'Best' } }));
+  await page.locator('[data-tab="explorer"]').click();
+  await page.locator('#analyzeAllMovesBtn').click();
+  await push({ type: 'partial', progress: 0.25, depth: 3, targetDepth: 12, moves: ranked(30) });
+  // The ranking from depth 3 is already on screen while the search continues.
+  await expect(page.locator('#allMovesTable tbody tr')).toHaveCount(3);
+  await expect(page.locator('#explorerProgressText')).toContainText('depth 3 / 12');
+  await expect(page.locator('#explorerProgress')).toBeVisible();
+  await push({ type: 'final', result: { fen: 'x', depth: 12, moves: ranked(25), bestEvalCp: 25, legalMoveCount: 3 } });
+  await expect(page.locator('#explorerProgress')).toBeHidden();
+  await expect(page.locator('#allMovesTable tbody tr')).toHaveCount(3);
+});
+
+test('the review and explorer APIs stream progress from the real engine', async ({ request }) => {
+  const replay = new Chess();
+  const pre = [];
+  const post = [];
+  for (const san of ['e4', 'e5', 'Nf3', 'Nc6']) { pre.push(replay.fen()); replay.move(san); post.push(replay.fen()); }
+  const body = { moves: ['e4', 'e5', 'Nf3', 'Nc6'], fenSequence: post, preMoveSequence: pre, settings: { depth: 6 } };
+  const streamed = await request.post('/api/analyze/game', { data: { ...body, stream: true } });
+  expect(streamed.headers()['content-type']).toContain('text/event-stream');
+  const events = (await streamed.text()).split('\n\n').filter(Boolean).map((chunk) => JSON.parse(chunk.slice(6)));
+  expect(events[0]).toEqual({ type: 'start', plyCount: 4 });
+  expect(events.filter((e) => e.type === 'ply').map((e) => e.ply.ply).toSorted((a, b) => a - b)).toEqual([1, 2, 3, 4]);
+  expect(events.at(-1).type).toBe('final');
+  // Without `stream` the same review comes back as one JSON document.
+  const plain = await (await request.post('/api/analyze/game', { data: body })).json();
+  expect(plain.plies.map((p) => p.san)).toEqual(events.at(-1).result.plies.map((p) => p.san));
+
+  const explorer = await request.post('/api/analyze/all-moves', { data: { fen: start, settings: { depth: 5 } } });
+  const partials = (await explorer.text()).split('\n\n').filter(Boolean).map((chunk) => JSON.parse(chunk.slice(6))).filter((e) => e.type === 'partial');
+  expect(partials.length).toBeGreaterThan(0);
+  expect(partials.at(-1).moves).toHaveLength(20);
+  expect(partials.at(-1).moves[0].deltaCp).toBe(0);
 });

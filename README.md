@@ -18,12 +18,13 @@ PawnForge is a full-stack, anonymous chess analysis web app with a self-hosted S
 - Piece badges: each piece type shows its best available move with quality indicator
 - Global move table: sort by evaluation, delta from best, or piece type
 - Filter by captures, checks, or all moves
-- Real-time progress as each search depth completes
+- Real-time progress: each completed search depth streams the full ranking so far, so scores appear on the board and in the table within a few hundred milliseconds and sharpen as the search deepens
 
 ### PGN Game Review
 - Upload/paste PGN to analyze a complete game
 - Import one of a player's 10 most recent standard games from lichess or chess.com by username
 - Evaluation graph (canvas) with clickable navigation
+- Results stream in: every move is listed at once, and each fills in (colour, graph point) as soon as its positions are analysed, so long games show results within the first second
 - Move-by-move annotations with quality classification
 - Navigate with arrow keys, buttons, or click the eval graph
 - Game summary with accuracy and ACPL (average centipawn loss) per side
@@ -80,8 +81,8 @@ Node.js HTTP Server (server.js)
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/api/analyze/position` | POST | Analyze position with MultiPV, or with `settings.square` score every legal move of the piece on that square |
-| `/api/analyze/all-moves` | POST | Stream eval for every legal move (SSE): one MultiPV search at `settings.depth` (4–16, default 12), with progress per completed depth |
-| `/api/analyze/game` | POST | Full game review from PGN: per-ply category, accuracy and the engine's better move (`bestMove`), per-side `accuracy`, and the opening with `bookExitPly` |
+| `/api/analyze/all-moves` | POST | Stream eval for every legal move (SSE): one MultiPV search at `settings.depth` (4–16, default 12); each completed depth sends a `partial` event with the ranked moves so far |
+| `/api/analyze/game` | POST | Full game review from PGN: per-ply category, accuracy and the engine's better move (`bestMove`), per-side `accuracy`, and the opening with `bookExitPly`. With `"stream": true` it answers with SSE: `start`, one `ply` event per move as it is ready (in any order), then `final` with the complete review |
 | `/api/play/move` | POST | Engine reply for play mode (`mode`: `elo` with `elo`, `full`, or `lose` with `loseBy`/`moveNumber`) |
 | `/api/opening` | GET | Detect opening by move sequence (`moves`, optional `fen` for custom starts) |
 | `/api/status` | GET | Engine and server status |

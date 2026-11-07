@@ -160,13 +160,12 @@ class EnginePool {
       while (true) {
         const line = await w.waitFor(() => true, 8000);
         if (line.startsWith('bestmove')) break;
-        if (line.startsWith('info')) {
-          if (/ score mate 0\b/.test(line)) {
-            checkmateScore = parseScore('mate', 0);
-          }
-          if (line.includes(' pv ') && line.includes(' multipv ')) {
-            lines.push(line);
-          }
+        if (!line.startsWith('info')) continue;
+        if (/ score mate 0\b/.test(line)) {
+          checkmateScore = parseScore('mate', 0);
+        }
+        if (line.includes(' pv ') && line.includes(' multipv ')) {
+          lines.push(line);
         }
       }
 

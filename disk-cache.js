@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import process from 'node:process';
+import { mapWithConcurrency } from './chess-analysis.js';
 
 // Engine results kept on disk so they survive restarts. Each entry is one small JSON file named by a
 // hash of the engine version and the request, so a different Stockfish build never reads another
@@ -33,7 +34,8 @@ export class DiskCache {
 
   async set(key, value) {
     const file = this.path(key);
-    const temp = `${file}.${process.pid}.${(this.writes += 1)}.tmp`;
+    this.writes += 1;
+    const temp = `${file}.${process.pid}.${this.writes}.tmp`;
     try {
       await mkdir(join(file, '..'), { recursive: true });
       await writeFile(temp, JSON.stringify({ key, value }));
@@ -49,16 +51,17 @@ export class DiskCache {
   async prune() {
     try {
       const files = [];
-      for (const shard of await readdir(this.dir)) {
+      await mapWithConcurrency(await readdir(this.dir), 4, async (shard) => {
         const shardDir = join(this.dir, shard);
-        for (const name of await readdir(shardDir).catch(() => [])) {
+        const names = await readdir(shardDir).catch(() => []);
+        await mapWithConcurrency(names, 16, async (name) => {
           const file = join(shardDir, name);
           const info = await stat(file).catch(() => null);
-          if (!info) continue;
+          if (!info) return;
           if (name.endsWith('.tmp') && Date.now() - info.mtimeMs > 60_000) await rm(file, { force: true });
           else if (name.endsWith('.json')) files.push({ file, mtime: info.mtimeMs });
-        }
-      }
+        });
+      });
       if (files.length <= this.maxEntries) return 0;
       files.sort((a, b) => a.mtime - b.mtime);
       const excess = files.slice(0, files.length - this.maxEntries);

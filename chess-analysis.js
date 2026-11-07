@@ -127,11 +127,14 @@ function stripPgnAnnotations(pgn) {
   return text;
 }
 
+// Numeric annotation glyphs such as $1 (good move) or $14 (White is slightly better).
+const PGN_NAG = /^\$\d+$/;
+
 export function parsePgnMoves(pgn) {
   return stripPgnAnnotations(pgn)
     .split(/\s+/)
     .map((token) => token.replace(/^\d+\.+/, ''))
-    .filter((token) => token && !PGN_RESULTS.has(token));
+    .filter((token) => token && !PGN_RESULTS.has(token) && !PGN_NAG.test(token));
 }
 
 // Run `fn` over `items` with at most `limit` calls in flight. The first

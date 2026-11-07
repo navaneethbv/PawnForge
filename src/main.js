@@ -1977,9 +1977,16 @@ function navigateWithKeyboard(event) {
   const targets = { ArrowLeft: current - 1, ArrowRight: current + 1, Home: first, End: last };
   if (!(event.key in targets)) return;
   event.preventDefault();
-  const target = Math.max(first, Math.min(last, targets[event.key]));
-  if (review) navigateToGamePly(target);
-  else jumpToHistoryPly(target);
+  let target = Math.max(first, Math.min(last, targets[event.key]));
+  if (!review) {
+    jumpToHistoryPly(target);
+    return;
+  }
+  // While a review streams in, step over moves that are not analysed yet, in the key's direction
+  // (Home and End look inwards for the first or last analysed move).
+  const step = ['ArrowLeft', 'End'].includes(event.key) ? -1 : 1;
+  while (target >= first && target <= last && !gameReviewData.plies.at(target)) target += step;
+  if (target >= first && target <= last) navigateToGamePly(target);
 }
 
 function handleKeyboardShortcut(event) {

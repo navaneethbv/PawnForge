@@ -277,7 +277,9 @@ function sendJson(res, status, data) {
 
 function parseBody(req, signal, maxBytes = 10 * 1024 * 1024) {
   return new Promise((resolve, reject) => {
-    let raw = '';
+    // Collect raw chunks and decode once: decoding chunk by chunk would split a multi-byte
+    // character (an accented player name in a PGN, say) that straddles two chunks.
+    const chunks = [];
     let bytes = 0;
     const cleanup = () => {
       req.removeListener('data', onData);
@@ -294,10 +296,11 @@ function parseBody(req, signal, maxBytes = 10 * 1024 * 1024) {
         req.resume();
         return;
       }
-      raw += data;
+      chunks.push(data);
     };
     const onEnd = () => {
       cleanup();
+      const raw = Buffer.concat(chunks).toString('utf8');
       try { resolve(raw ? JSON.parse(raw) : {}); }
       catch { reject(new HttpError(400, 'Request body must be valid JSON.')); }
     };

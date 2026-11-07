@@ -19,6 +19,10 @@ function validateCastling(position, rights) {
 
 function validateEnPassant(position, square, opponent) {
   if (square === '-') return;
+  // The square a pawn skipped over is on rank 6 when White is to move, rank 3 when Black is.
+  if (square[1] !== (position.turn() === 'w' ? '6' : '3')) {
+    throw new Error('Invalid FEN: the en passant square does not match the side to move.');
+  }
   const pawnSquare = `${square[0]}${position.turn() === 'w' ? '5' : '4'}`;
   if (position.get(square) || !hasPiece(position, pawnSquare, 'p', opponent)) {
     throw new Error('Invalid FEN: en passant requires the pawn that just advanced two squares.');

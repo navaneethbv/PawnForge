@@ -72,8 +72,11 @@ test('real engine returns legal moves and completes explorer streaming', async (
   const response = await request.post('/api/analyze/position', { data: { fen: start, settings: { depth: 4, multiPv: 1 } } });
   expect(response.ok()).toBeTruthy();
   expect((await response.json()).topMoves[0].uci).toMatch(/^[a-h][1-8][a-h][1-8]/);
-  const stream = await request.post('/api/analyze/all-moves', { data: { fen: start, settings: { movetimeMs: 20 } } });
-  expect(await stream.text()).toContain('"legalMoveCount":20');
+  const stream = await request.post('/api/analyze/all-moves', { data: { fen: start, settings: { depth: 6 } } });
+  const streamText = await stream.text();
+  expect(streamText).toContain('"legalMoveCount":20');
+  // Progress is reported per completed search depth, ending at the requested depth.
+  expect(streamText).toContain('"depth":6,"targetDepth":6');
   const review = await request.post('/api/analyze/game', { data: { fenSequence: [afterE4], preMoveSequence: [start], moves: ['e4'], settings: { depth: 4 } } });
   expect(review.ok()).toBeTruthy();
   expect((await review.json()).plies[0]).toMatchObject({ san: 'e4', fen: afterE4 });
@@ -245,7 +248,7 @@ test('real-engine workflows render analysis, coach, explorer filters and a compl
   await page.locator('#resetBtn').click();
 
   await page.locator('[data-tab="explorer"]').click();
-  await page.locator('#movetimeSelect').selectOption('50');
+  await page.locator('#explorerDepthSelect').selectOption('8');
   await page.locator('#analyzeAllMovesBtn').click();
   await expect(page.locator('#allMovesTable tbody tr')).toHaveCount(20);
   await page.locator('#allMovesTable').focus();
@@ -669,4 +672,49 @@ test('real engine scores every legal move of one piece', async ({ request }) => 
   expect((await rook.json()).moves).toEqual([]);
   const invalid = await request.post('/api/analyze/position', { data: { fen: start, settings: { square: 'g1 searchmoves' } } });
   expect(invalid.status()).toBe(400);
+});
+
+test('game review shows accuracy, book exit and the better move, and turns blunders into puzzles', async ({ page }) => {
+  await load(page);
+  await page.evaluate(() => localStorage.removeItem('pawnforge.mistakePuzzles'));
+  await page.locator('[data-tab="game-review"]').click();
+  await expect(page.locator('#puzzleStartBtn')).toBeDisabled();
+  // 3...Nf6?? allows Qxf7 mate; the real engine reviews it.
+  await page.locator('#pgnInput').fill('1. e4 e5 2. Qh5 Nc6 3. Bc4 Nf6 4. Qxf7# 1-0');
+  await page.locator('#gameDepthSelect').selectOption('8');
+  await page.locator('#analyzeGameBtn').click();
+  await expect(page.locator('.summary-card').filter({ hasText: 'White accuracy' })).toContainText('%', { timeout: 30000 });
+  await expect(page.locator('.summary-card').filter({ hasText: 'Black accuracy' })).toContainText('%');
+  await expect(page.locator('.summary-card').filter({ hasText: 'Left book' }).locator('.value')).not.toHaveText('–');
+
+  const blunder = page.locator('.game-move', { hasText: 'Nf6' });
+  await expect(blunder).toHaveClass(/cat-blunder/);
+  await expect(blunder).toHaveAttribute('title', /better: /);
+  await blunder.click();
+  await expect(page.locator('#gameMoveDetail')).toContainText('Blunder');
+  await expect(page.locator('#gameMoveDetail')).toContainText('Better was');
+  await expect(page.locator('#gameMoveDetail .detail-line')).toContainText('3...');
+
+  // The blunder became a puzzle, kept in this browser.
+  await expect(page.locator('#puzzleCount')).toContainText('to solve');
+  const puzzles = await page.evaluate(() => JSON.parse(localStorage.getItem('pawnforge.mistakePuzzles')));
+  const puzzle = puzzles.find((p) => p.played === '3... Nf6');
+  expect(puzzle).toBeTruthy();
+  await page.locator('#puzzleStartBtn').click();
+  await expect(page.locator('#puzzleStatus')).toContainText('you played 3... Nf6');
+
+  // Play puzzles in order until this one is on the board.
+  for (let i = 0; i < puzzles.length && !(await page.locator('#puzzleStatus').textContent()).includes('3... Nf6'); i += 1) {
+    await page.locator('#puzzleNextBtn').click();
+  }
+  // A wrong move snaps back; the solution is then shown and played.
+  const wrong = puzzle.solution === 'a7a6' ? ['h7', 'h6'] : ['a7', 'a6'];
+  await drag(page, wrong[0], wrong[1]);
+  await expect(page.locator('#puzzleStatus')).toContainText('not the engine');
+  await expect(page.locator(`#board .square-${wrong[0]} img`)).toHaveCount(1);
+  await page.locator('#puzzleSolutionBtn').click();
+  await expect(page.locator('#puzzleStatus')).toContainText(puzzle.solutionSan);
+  await drag(page, puzzle.solution.slice(0, 2), puzzle.solution.slice(2, 4));
+  await expect(page.locator('#puzzleStatus')).toContainText(`Correct: ${puzzle.solutionSan}`);
+  expect((await page.evaluate(() => JSON.parse(localStorage.getItem('pawnforge.mistakePuzzles')))).find((p) => p.fen === puzzle.fen).solved).toBe(true);
 });

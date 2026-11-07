@@ -13,11 +13,12 @@ PawnForge is a full-stack, anonymous chess analysis web app with a self-hosted S
 - The move history and selected move are restored after a page reload
 
 ### Evaluate Every Legal Move (Signature Feature)
-- Evaluates all legal moves in any position via streaming SSE
+- Evaluates all legal moves in any position with one Stockfish search (one line per move), streamed over SSE
+- The Depth picker (8–16) sets the search depth; every move is scored by the same search, so scores are directly comparable
 - Piece badges: each piece type shows its best available move with quality indicator
 - Global move table: sort by evaluation, delta from best, or piece type
 - Filter by captures, checks, or all moves
-- Real-time progress as moves are evaluated
+- Real-time progress as each search depth completes
 
 ### PGN Game Review
 - Upload/paste PGN to analyze a complete game
@@ -25,8 +26,12 @@ PawnForge is a full-stack, anonymous chess analysis web app with a self-hosted S
 - Evaluation graph (canvas) with clickable navigation
 - Move-by-move annotations with quality classification
 - Navigate with arrow keys, buttons, or click the eval graph
-- Game summary with ACPL (average centipawn loss) per side
+- Game summary with accuracy and ACPL (average centipawn loss) per side
+  - Accuracy uses the Lichess-style win-percentage formula; a side's game accuracy averages the plain and harmonic means of its move accuracies, so one blunder weighs more than in a plain average
 - Turning point detection (mistakes and blunders highlighted)
+- Selecting a move shows its accuracy and, for inaccuracies, mistakes and blunders, the engine's better move and line
+- Opening book exit: book moves are shown in italics, the move that left known theory is underlined, and the summary shows where the game left book
+- Practice your mistakes: each review turns mistakes and blunders into "find the engine's move" puzzles, saved in this browser (up to 100). Wrong moves snap back, **Show solution** draws the answer, and coach hints stay hidden until the puzzle is solved. Starting a puzzle replaces the review on the board
 
 ### Opening Discovery
 - Detects openings from the current move sequence using about 3,800 named lines from the lichess opening dataset
@@ -75,8 +80,8 @@ Node.js HTTP Server (server.js)
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/api/analyze/position` | POST | Analyze position with MultiPV, or with `settings.square` score every legal move of the piece on that square |
-| `/api/analyze/all-moves` | POST | Stream eval for every legal move (SSE) |
-| `/api/analyze/game` | POST | Full game review from PGN |
+| `/api/analyze/all-moves` | POST | Stream eval for every legal move (SSE): one MultiPV search at `settings.depth` (4–16, default 12), with progress per completed depth |
+| `/api/analyze/game` | POST | Full game review from PGN: per-ply category, accuracy and the engine's better move (`bestMove`), per-side `accuracy`, and the opening with `bookExitPly` |
 | `/api/play/move` | POST | Engine reply for play mode (`mode`: `elo` with `elo`, `full`, or `lose` with `loseBy`/`moveNumber`) |
 | `/api/opening` | GET | Detect opening by move sequence (`moves`, optional `fen` for custom starts) |
 | `/api/status` | GET | Engine and server status |
@@ -213,7 +218,7 @@ Keyboard shortcuts: `←`/`→`/`Home`/`End` navigate, `F` flips the board, `Z` 
 
 The repository root also contains a Manifest V3 Chrome extension.
 Start PawnForge with `npm start`, open `chrome://extensions`, enable Developer mode, and load this repository directory as an unpacked extension.
-The Coach overlay loads only on Chess.com, Lichess, ChessTempo, and chess.org (including their subdomains), and prefers a complete page FEN.
+The Coach overlay loads only on Chess.com, Lichess, ChessTempo, and chess.org, including their subdomains, and prefers a complete page FEN.
 It does not request access to unrelated websites.
 ChessTempo and chess.org use generic board detection or manual FEN input; site-specific automatic detection is covered for Chess.com and Lichess.
 It reads the exact position from chess.com boards and from the lichess analysis board, so those need no approximation.
@@ -228,7 +233,7 @@ It can suggest moves at a rated strength (Elo 1320 to 2500), or throw the game b
 In games against people the row stays hidden and the overlay uses Coach mode, even if a vs-bot mode was chosen earlier.
 On approximate DOM positions, the throw plan reads the move number from the move list.
 **Score a piece's moves when I select it** puts a coloured score on every square a selected piece can reach (the piece's best move green, then lime good, amber inaccuracy, orange mistake, red blunder against it); **Score as** shows it for the side moving, from White's view, or as the loss against the best move.
-The option starts off; the first time you turn it on, PawnForge shows a fair-play reminder. Piece move scores are available wherever the overlay runs by default. To restrict scoring on a site, add it to `pieceScores.blockedSites` in `site-rules.json`.
+The option starts off; the first time you turn it on, PawnForge shows a fair-play reminder. Piece move scores are available wherever the overlay runs by default.
 Paste a complete six-field FEN for accurate analysis when the page does not expose one.
 The Side selector overrides the side to move for approximate DOM analysis; it applies to the current position only and returns to Auto detect after the next move.
 Overlay evaluations are shown from White's point of view, like the lichess and chess.com eval bars.
@@ -265,7 +270,8 @@ Cancelling a queued search releases its capacity immediately without interruptin
 Streaming failures are sent as SSE error events.
 Shutdown terminates the engine children.
 An LRU cache holds up to 500 results for one hour.
-Game review analyzes each distinct position once and spreads the work across the engine pool.
+Game review analyzes each distinct position once. The positions are split into contiguous runs in game order, one run per engine worker, so each worker reuses its hash from the previous position.
+Each engine worker uses a 64 MB hash table; set `PAWNFORGE_ENGINE_HASH_MB` (16–2048) to change it. `/api/status` reports it as `engineHashMb`.
 
 The server listens only on `127.0.0.1` and accepts local Host headers.
 Browser API requests are restricted to the local app origins and Chrome extension origins.

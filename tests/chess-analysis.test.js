@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  MATE_SCORE, START_FEN, chooseLosingMove, clampEval, classify, detectOpening, findContinuations,
-  losingPlan, mapWithConcurrency, parsePgnMoves, parseScore, validateFen
+  MATE_SCORE, START_FEN, bookExitPly, chooseLosingMove, clampEval, classify, detectOpening, findContinuations,
+  gameAccuracy, losingPlan, mapWithConcurrency, moveAccuracy, parsePgnMoves, parseScore, validateFen, winPercent
 } from '../chess-analysis.js';
 
 test('mate scores keep their distance and ordering', () => {
@@ -140,4 +140,35 @@ test('throwing the game walks into mate only in the collapse phase', () => {
   assert.notEqual(chooseLosingMove(candidates(-100, mated), { moveNumber: 15, loseBy: 30, random: first }).uci, 'm1');
   assert.equal(chooseLosingMove(candidates(-700, mated), { moveNumber: 24, loseBy: 30, random: first }).uci, 'm1');
   assert.equal(chooseLosingMove([], { moveNumber: 29, loseBy: 30 }), null);
+});
+
+test('accuracy follows the win percentage a move gives up', () => {
+  assert.equal(winPercent(0), 50);
+  assert.ok(winPercent(MATE_SCORE) > 97 && winPercent(-MATE_SCORE) < 3);
+  // Keeping the evaluation is perfect; gaining ground never scores above 100.
+  assert.equal(moveAccuracy(30, 30), 100);
+  assert.equal(moveAccuracy(-200, 300), 100);
+  // Bigger drops score lower, and accuracy never goes below 0.
+  const small = moveAccuracy(30, -20);
+  const large = moveAccuracy(30, -400);
+  assert.ok(small > 75 && small < 100, `small drop ${small}`);
+  assert.ok(large < 30, `large drop ${large}`);
+  assert.equal(moveAccuracy(MATE_SCORE - 1, -(MATE_SCORE - 1)), 0);
+});
+
+test('game accuracy punishes a blunder more than a plain average and is null without moves', () => {
+  assert.equal(gameAccuracy([]), null);
+  assert.equal(gameAccuracy([90, 90, 90]), 90);
+  const withBlunder = gameAccuracy([100, 100, 100, 20]);
+  assert.ok(withBlunder < 80, `blunder game ${withBlunder}`);
+  // A zero-accuracy move does not divide by zero.
+  assert.ok(Number.isFinite(gameAccuracy([0, 100])));
+});
+
+test('book exit is the first move no book line contains', () => {
+  assert.equal(bookExitPly(['e4', 'e5', 'Nf3', 'Nc6', 'Bb5', 'a6', 'h4']), 7);
+  assert.equal(bookExitPly(['e4', 'e5']), null);
+  assert.equal(bookExitPly(['e4+', 'e5!']), null);
+  assert.equal(detectOpening(['e4', 'e5', 'Nf3', 'Nc6', 'Bb5', 'a6', 'h4']).bookExitPly, 7);
+  assert.equal(detectOpening(['e4'], { startFen: '4k3/8/8/8/8/8/8/4K3 w - - 0 1' }).bookExitPly, null);
 });

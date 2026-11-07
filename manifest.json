@@ -23,8 +23,15 @@
   ],
   "content_scripts": [
     {
-      "matches": ["*://*.chess.com/*", "*://*.lichess.org/*", "*://*.chesstempo.com/*", "*://*.chess.org/*"],
-      "js": ["overlay.js"],
+      "matches": [
+        "*://*.chess.com/*",
+        "*://*.lichess.org/*",
+        "*://*.chesstempo.com/*",
+        "*://*.chess.org/*"
+      ],
+      "js": [
+        "overlay.js"
+      ],
       "run_at": "document_idle"
     }
   ]

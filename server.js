@@ -1,7 +1,7 @@
 import { EngineWorker } from './engine-worker.js';
 import {
-  ENGINE_ELO_MAX, ENGINE_ELO_MIN, HttpError, MATE_THRESHOLD, START_FEN, chooseLosingMove, clampEval, classify,
-  detectOpening, mapWithConcurrency, parsePgnMoves, parseScore, requireInteger, validateFen
+  ENGINE_ELO_MAX, ENGINE_ELO_MIN, HttpError, START_FEN, chooseLosingMove, clampEval, classify,
+  detectOpening, gameAccuracy, mapWithConcurrency, moveAccuracy, parsePgnMoves, parseScore, requireInteger, validateFen
 } from './chess-analysis.js';
 import http from 'node:http';
 import os from 'node:os';
@@ -97,12 +97,17 @@ class LRUCache {
 
 const cache = new LRUCache();
 
+// Transposition table size per engine worker, in MB. Stockfish's default (16) is small for depth 16-20.
+const configuredHash = Number(process.env.PAWNFORGE_ENGINE_HASH_MB ?? 64);
+const ENGINE_HASH_MB = Number.isInteger(configuredHash) && configuredHash >= 16 && configuredHash <= 2048 ? configuredHash : 64;
+
 // ── Engine Pool ──
 class EnginePool {
   constructor(size) {
     this.enabled = ENGINE_AVAILABLE;
     this.size = size;
-    this.workers = this.enabled ? Array.from({ length: size }, () => new EngineWorker(STOCKFISH_BIN)) : [];
+    const setupCommands = [`setoption name Hash value ${ENGINE_HASH_MB}`];
+    this.workers = this.enabled ? Array.from({ length: size }, () => new EngineWorker(STOCKFISH_BIN, { setupCommands })) : [];
     this.pointer = 0;
   }
 
@@ -117,12 +122,13 @@ class EnginePool {
   }
 
   // `searchMoves` limits the search to those root moves (UCI "searchmoves"); each still gets its own line.
-  async analyzePosition({ fen, depth = 12, multipv = 3, searchMoves = [], signal }) {
+  // `worker` pins the search to one engine, so consecutive positions reuse its hash (game review).
+  async analyzePosition({ fen, depth = 12, multipv = 3, searchMoves = [], worker = null, signal }) {
     if (!this.enabled) throw new Error('Stockfish is not available. Set STOCKFISH_BIN or build engine/Stockfish.');
     const key = `pos:${fen}:${depth}:${multipv}:${searchMoves.join(',')}`;
     if (cache.has(key)) return cache.get(key);
 
-    const result = await this.acquire().run(async (w) => {
+    const result = await (worker ?? this.acquire()).run(async (w) => {
       w.send(`setoption name MultiPV value ${multipv}`);
       w.send(`position fen ${fen}`);
       w.send(searchMoves.length ? `go depth ${depth} searchmoves ${searchMoves.join(' ')}` : `go depth ${depth}`);
@@ -155,6 +161,37 @@ class EnginePool {
       return { fen, topMoves, bestEvalCp, source: 'stockfish' };
     }, signal);
 
+    cache.set(key, result);
+    return result;
+  }
+
+  // Scores every move in `moves` with one MultiPV search (one line per move), so all scores come from
+  // the same search. `onDepth(depth)` fires each time every line has finished a new depth.
+  async analyzeAllMoves({ fen, moves, depth, signal, onDepth }) {
+    if (!this.enabled) throw new Error('Stockfish is not available. Set STOCKFISH_BIN or build engine/Stockfish.');
+    const key = `all:${fen}:${depth}`;
+    if (cache.has(key)) return cache.get(key);
+    const result = await this.acquire().run(async (w) => {
+      w.send(`setoption name MultiPV value ${moves.length}`);
+      w.send(`position fen ${fen}`);
+      w.send(`go depth ${depth} searchmoves ${moves.join(' ')}`);
+      const latest = new Map();
+      let completedDepth = 0;
+      while (true) {
+        const line = await w.waitFor(() => true, 8000);
+        if (line.startsWith('bestmove')) break;
+        const m = line.match(/^info depth (\d+) .*?multipv (\d+) .*?score (cp|mate) (-?\d+)( (?:lower|upper)bound)?.* pv (\S+)/);
+        // Bound scores are provisional; keep each move's last exact score.
+        if (!m || m[5]) continue;
+        latest.set(m[6], parseScore(m[3], m[4]));
+        const lineDepth = Number(m[1]);
+        if (Number(m[2]) === moves.length && lineDepth > completedDepth) {
+          completedDepth = lineDepth;
+          onDepth?.(lineDepth);
+        }
+      }
+      return moves.filter((uci) => latest.has(uci)).map((uci) => ({ uci, evalCp: latest.get(uci) }));
+    }, signal);
     cache.set(key, result);
     return result;
   }
@@ -199,23 +236,6 @@ class EnginePool {
       // Workers are shared with analysis, so restore full strength before releasing this one.
       w.send('setoption name UCI_LimitStrength value false');
       return { uci: uci === '(none)' ? null : uci, evalCp };
-    }, signal);
-  }
-
-  async evaluateMove(fen, move, movetime = 120, signal) {
-    if (!this.enabled) throw new Error('Stockfish is not available. Set STOCKFISH_BIN or build engine/Stockfish.');
-    return this.acquire().run(async (w) => {
-      w.send('setoption name MultiPV value 1');
-      w.send(`position fen ${fen} moves ${move}`);
-      w.send(`go movetime ${movetime}`);
-      let score = 0;
-      while (true) {
-        const line = await w.waitFor(() => true, 5000);
-        if (line.startsWith('bestmove')) break;
-        const m = line.match(/score (cp|mate) (-?\d+)/);
-        if (m) score = parseScore(m[1], m[2]);
-      }
-      return score;
     }, signal);
   }
 }
@@ -331,13 +351,7 @@ async function analyzeAllMovesRequest(req, res, signal) {
   if (!pool.enabled) return sendJson(res, 503, { error: 'Stockfish unavailable.' });
   const body = await readJsonObject(req, signal);
   const fen = validateFen(body.fen);
-
-  const movetime = requireInteger(body.settings?.movetimeMs, {
-    name: 'movetimeMs',
-    defaultValue: 120,
-    min: 20,
-    max: 1000
-  });
+  const depth = requireInteger(body.settings?.depth, { name: 'depth', defaultValue: 12, min: 4, max: 16 });
   const legal = await pool.legalMoves(fen, signal);
 
   res.writeHead(200, {
@@ -347,20 +361,17 @@ async function analyzeAllMovesRequest(req, res, signal) {
     Connection: 'keep-alive'
   });
 
-  let clientDisconnected = false;
-  res.on('close', () => { clientDisconnected = true; });
-
-  const rows = [];
-  // Evaluate one move at a time so progress streams in order and a single client cannot flood the engine pool.
-  for (const [i, move] of legal.entries()) {
-    if (clientDisconnected) return;
-    // The engine scores the reply position for the opponent. Negate it for the
-    // mover, and count the move itself when the mover is delivering mate.
-    const moverEval = -(await pool.evaluateMove(fen, move, movetime, signal));
-    const row = { uci: move, evalCp: moverEval >= MATE_THRESHOLD ? moverEval - 1 : moverEval };
-    rows.push(row);
-    res.write(`data: ${JSON.stringify({ type: 'partial', progress: (i + 1) / legal.length, row })}\n\n`);
-  }
+  // One search scores every legal move from the mover's view; progress streams as each depth completes.
+  const rows = legal.length === 0 ? [] : await pool.analyzeAllMoves({
+    fen,
+    moves: legal,
+    depth,
+    signal,
+    onDepth: (completed) => {
+      if (!res.destroyed) res.write(`data: ${JSON.stringify({ type: 'partial', progress: completed / depth, depth: completed, targetDepth: depth })}\n\n`);
+    }
+  });
+  if (res.destroyed) return undefined;
 
   rows.sort((a, b) => b.evalCp - a.evalCp);
   const bestEvalCp = rows[0]?.evalCp ?? 0;
@@ -369,8 +380,16 @@ async function analyzeAllMovesRequest(req, res, signal) {
     return { ...r, deltaCp, category: classify(deltaCp) };
   });
 
-  res.write(`data: ${JSON.stringify({ type: 'final', result: { fen, moves: final, bestEvalCp, legalMoveCount: final.length } })}\n\n`);
+  res.write(`data: ${JSON.stringify({ type: 'final', result: { fen, depth, moves: final, bestEvalCp, legalMoveCount: final.length } })}\n\n`);
   return res.end();
+}
+
+// Splits `items` into at most `count` contiguous, nearly equal runs, keeping their order.
+function contiguousRuns(items, count) {
+  const runs = [];
+  const size = Math.ceil(items.length / Math.max(1, count));
+  for (let start = 0; start < items.length; start += size) runs.push(items.slice(start, start + size));
+  return runs;
 }
 
 function normalizeGameReview(body) {
@@ -401,29 +420,40 @@ async function analyzeGameRequest(req, res, signal) {
   const body = await readJsonObject(req, signal);
   const { normalizedFens, normalizedPreFens, moves, depth } = normalizeGameReview(body);
 
-  // Each pre-move position is usually the previous post-move position, so
-  // analyze every distinct FEN once, spread across the engine pool.
+  // Each pre-move position is usually the previous post-move position, so analyze every distinct FEN
+  // once. The positions are split into contiguous runs in game order, one run per engine, so each
+  // engine searches neighbouring positions and reuses its hash from the previous one.
   const uniqueFens = [...new Set([...normalizedPreFens.filter(Boolean), ...normalizedFens])];
+  const runs = contiguousRuns(uniqueFens, pool.size);
   const evals = new Map();
-  await mapWithConcurrency(uniqueFens, pool.size, async (fen) => {
-    signal.throwIfAborted();
-    const analysis = await pool.analyzePosition({ fen, depth, multipv: 1, signal });
-    evals.set(fen, analysis.bestEvalCp);
+  await mapWithConcurrency(runs, runs.length, async (run, runIndex) => {
+    for (const fen of run) {
+      signal.throwIfAborted();
+      const analysis = await pool.analyzePosition({ fen, depth, multipv: 1, worker: pool.workers[runIndex], signal });
+      evals.set(fen, { evalCp: analysis.bestEvalCp, best: analysis.topMoves[0] ?? null });
+    }
   });
 
+  const sideAccuracies = { w: [], b: [] };
   const plies = normalizedFens.map((fen, i) => {
-    const evalAfterMove = evals.get(fen);
+    const evalAfterMove = evals.get(fen).evalCp;
     const preFen = normalizedPreFens.at(i);
+    const before = preFen ? evals.get(preFen) : null;
     // The pre-move eval is from the mover's view and the post-move eval from
     // the opponent's, so their sum is the mover's loss versus the best move.
-    const deltaCp = preFen ? Math.max(0, clampEval(evals.get(preFen)) + clampEval(evalAfterMove)) : 0;
+    const deltaCp = before ? Math.max(0, clampEval(before.evalCp) + clampEval(evalAfterMove)) : 0;
+    const accuracy = before ? Math.round(moveAccuracy(before.evalCp, -evalAfterMove) * 10) / 10 : null;
+    if (accuracy !== null) sideAccuracies[preFen.split(' ')[1]].push(accuracy);
     return {
       ply: i + 1,
       san: moves.at(i) || `ply-${i + 1}`,
       fen,
       evalCp: evalAfterMove,
       deltaCp,
-      category: classify(deltaCp)
+      accuracy,
+      category: classify(deltaCp),
+      // The engine's choice in the position before this move, for "what was better" and puzzles.
+      bestMove: before?.best ? { uci: before.best.uci, evalCp: before.best.evalCp, pv: before.best.pv.split(' ').slice(0, 8) } : null
     };
   });
 
@@ -431,6 +461,7 @@ async function analyzeGameRequest(req, res, signal) {
   const evalGraph = plies.map((p) => ({ ply: p.ply, evalCp: p.evalCp }));
   return sendJson(res, 200, {
     opening: detectOpening(moves, { startFen: normalizedPreFens[0] || START_FEN }),
+    accuracy: { white: gameAccuracy(sideAccuracies.w), black: gameAccuracy(sideAccuracies.b) },
     plyCount: plies.length,
     plies,
     turningPoints,
@@ -459,6 +490,7 @@ async function dispatchApi(req, res, signal) {
     return sendJson(res, 200, {
       engine: pool.enabled ? 'stockfish' : 'unavailable',
       engineVersion: ENGINE_VERSION,
+      engineHashMb: ENGINE_HASH_MB,
       workers: pool.size,
       cacheSize: cache.cache.size,
       uptime: process.uptime()
@@ -571,7 +603,7 @@ const server = http.createServer((req, res) => {
   if (req.url.startsWith('/api/')) return handleApi(req, res);
   return serveStatic(req, res);
 }).listen(PORT, '127.0.0.1', () => {
-  console.log(`PawnForge running at http://localhost:${PORT} | stockfish=${pool.enabled ? 'on' : 'off'} | workers=${pool.size}`);
+  console.log(`PawnForge running at http://localhost:${PORT} | stockfish=${pool.enabled ? 'on' : 'off'} | workers=${pool.size} | hash=${ENGINE_HASH_MB}MB`);
 });
 
 for (const signal of ['SIGTERM', 'SIGINT']) {

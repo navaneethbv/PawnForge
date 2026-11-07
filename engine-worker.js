@@ -1,8 +1,10 @@
 import { spawn } from 'node:child_process';
 
 export class EngineWorker {
-  constructor(binary, { timeoutMs = 15000, maxPending = 8 } = {}) {
+  // `setupCommands` (for example `setoption name Hash value 64`) are sent after `uci` on every (re)start.
+  constructor(binary, { timeoutMs = 15000, maxPending = 8, setupCommands = [] } = {}) {
     this.binary = binary;
+    this.setupCommands = setupCommands;
     this.timeoutMs = timeoutMs;
     this.maxPending = maxPending;
     this.pending = 0;
@@ -30,6 +32,7 @@ export class EngineWorker {
       for (const wake of session.waiters) wake();
     });
     this.send('uci');
+    for (const command of this.setupCommands) this.send(command);
     this.send('isready');
     return session;
   }

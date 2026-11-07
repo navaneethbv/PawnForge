@@ -563,10 +563,8 @@ function squareCentre(square) {
   return { x: (square.charCodeAt(0) - 97) * 60 + 30, y: (8 - Number(square[1])) * 60 + 30 };
 }
 
-// Injects the overlay with the real site-rules.json and turns piece move scores on.
+// Injects the overlay and turns piece move scores on.
 async function injectWithPieceScores(page) {
-  const rules = JSON.parse(await readFile('site-rules.json', 'utf8'));
-  await page.evaluate((value) => { window.__PAWNFORGE_SITE_RULES__ = value; }, rules);
   await injectOverlay(page);
   await page.locator('#pawnforge-piece-scores').check();
 }
@@ -658,7 +656,7 @@ for (const url of [
   'http://lichess.org/abcd1234',
   'http://chess-club.example/game/42',
 ]) {
-  test(`default site rules allow piece scores on ${url}`, async ({ page }) => {
+  test(`piece scores work on ${url}`, async ({ page }) => {
     const requests = await routePieceScores(page, knightMoves);
     await openSiteUrl(page, url);
     await chessComFixture(page);
@@ -671,12 +669,12 @@ for (const url of [
   });
 }
 
-test('piece scores start off, show the fair-play notice once, and stay off without site rules', async ({ page }) => {
+test('piece scores start off, show the fair-play notice once, and work without site rules', async ({ page }) => {
   const requests = await routePieceScores(page, knightMoves);
   const pieceRequests = () => requests.filter((body) => body.settings?.square);
   await openSiteUrl(page, 'http://chess-club.example/analysis');
   await chessComFixture(page);
-  // No site rules: the overlay cannot tell which sites are blocked, so it allows none.
+  // Scoring needs no site configuration.
   await injectOverlay(page);
   await page.locator('#pawnforge-approximate').check();
   await expect(page.locator('#pawnforge-hud-candidates button').first()).toBeVisible();
@@ -691,8 +689,8 @@ test('piece scores start off, show the fair-play notice once, and stay off witho
   await page.locator('#pawnforge-piece-scores').check();
   await expect(page.locator('#pawnforge-piece-status')).toBeEmpty();
   await selectSquare(page, 'd7');
-  await expect(page.locator('#pawnforge-piece-status')).toHaveText('Piece move scores are off on this page.');
-  expect(pieceRequests()).toEqual([]);
+  await expect(page.locator('[data-pawnforge-pointer="piece-move"]')).toHaveCount(4);
+  expect(pieceRequests()).toHaveLength(1);
 });
 
 test("a piece's best move is green even when another piece has a better move", async ({ page }) => {

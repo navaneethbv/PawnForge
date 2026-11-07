@@ -1294,6 +1294,36 @@ label.field-label { margin-bottom: 6px; }
 .game-move.cat-mistake { --cat-color: var(--mistake); color: #fb923c; font-weight: 600; }
 .game-move.cat-blunder { --cat-color: var(--blunder); color: #f87171; font-weight: 700; }
 .game-move.active { background: var(--accent-fill); color: #fff; }
+/* Moves still in opening theory, and the move that left it. */
+.game-move.book { font-style: italic; }
+.game-move.book-exit { box-shadow: inset 0 -2px 0 var(--accent); }
+
+.game-move-detail {
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--cat-color, var(--border-strong));
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.game-move-detail.cat-best { --cat-color: var(--best); }
+.game-move-detail.cat-good { --cat-color: var(--good); }
+.game-move-detail.cat-inaccuracy { --cat-color: var(--inaccuracy); }
+.game-move-detail.cat-mistake { --cat-color: var(--mistake); }
+.game-move-detail.cat-blunder { --cat-color: var(--blunder); }
+.game-move-detail .detail-label { font-weight: 700; color: var(--cat-color, var(--text)); }
+.game-move-detail .detail-line { margin-top: 4px; color: var(--text-muted); font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
+
+.puzzle-panel {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+.puzzle-status { margin: 4px 0 10px; color: var(--text-muted); font-size: 13px; }
+.puzzle-status.success { color: var(--success); font-weight: 600; }
+.puzzle-status.retry { color: var(--inaccuracy); }
 
 /* ── Openings ── */
 .opening-result {

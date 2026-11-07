@@ -81,6 +81,29 @@ export function classify(deltaCp) {
   return { key: 'blunder', label: 'Blunder' };
 }
 
+// ── Accuracy ──
+// Lichess-style accuracy: evaluations become a win percentage, and a move's accuracy falls off
+// exponentially with the win percentage it gives up. Constants are Lichess's published fit.
+export function winPercent(cp) {
+  return 50 + 50 * (2 / (1 + Math.exp(-0.00368208 * clampEval(cp))) - 1);
+}
+
+// `beforeCp` and `afterCp` are both from the mover's point of view.
+export function moveAccuracy(beforeCp, afterCp) {
+  const drop = Math.max(0, winPercent(beforeCp) - winPercent(afterCp));
+  const raw = 103.1668100711649 * Math.exp(-0.04354415386753951 * drop) - 3.166924740191411;
+  return Math.max(0, Math.min(100, raw + 1));
+}
+
+// A side's game accuracy: the mean of the arithmetic and harmonic means of its move accuracies,
+// so a single blunder costs more than in a plain average. Null when the side made no moves.
+export function gameAccuracy(accuracies) {
+  if (accuracies.length === 0) return null;
+  const mean = accuracies.reduce((sum, value) => sum + value, 0) / accuracies.length;
+  const harmonic = accuracies.length / accuracies.reduce((sum, value) => sum + 1 / Math.max(value, 1), 0);
+  return Math.round(((mean + harmonic) / 2) * 10) / 10;
+}
+
 const PGN_RESULTS = new Set(['1-0', '0-1', '1/2-1/2', '*']);
 
 // Remove tags, comments and (possibly nested) variations in one linear pass.
@@ -181,13 +204,23 @@ export function findContinuations(moveList) {
   return byMove ? [...byMove].map(([move, item]) => ({ move, name: item.name, eco: item.eco })) : [];
 }
 
+// The 1-based ply of the first move that no book line contains, or null while the game is in book.
+export function bookExitPly(moveList) {
+  const moves = moveList.map(normaliseSan);
+  for (let ply = 0; ply < moves.length; ply += 1) {
+    if (!continuationsByPrefix.get(moves.slice(0, ply).join(' '))?.has(moves[ply])) return ply + 1;
+  }
+  return null;
+}
+
 export function detectOpening(moveList, { startFen = START_FEN } = {}) {
   if (startFen.split(' ')[0] !== START_FEN.split(' ')[0]) {
-    return { eco: null, name: 'Custom starting position', bookPlyRange: null, continuations: [] };
+    return { eco: null, name: 'Custom starting position', bookPlyRange: null, bookExitPly: null, continuations: [] };
   }
   if (moveList.length === 0) {
-    return { eco: null, name: 'Starting position', bookPlyRange: null, continuations: findContinuations(moveList) };
+    return { eco: null, name: 'Starting position', bookPlyRange: null, bookExitPly: null, continuations: findContinuations(moveList) };
   }
+  const exitPly = bookExitPly(moveList);
 
   const moves = moveList.map(normaliseSan);
   let bestMatch = null;
@@ -196,12 +229,13 @@ export function detectOpening(moveList, { startFen = START_FEN } = {}) {
   }
 
   if (!bestMatch) {
-    return { eco: 'A00', name: 'Uncommon Opening', bookPlyRange: null, continuations: findContinuations(moveList) };
+    return { eco: 'A00', name: 'Uncommon Opening', bookPlyRange: null, bookExitPly: exitPly, continuations: findContinuations(moveList) };
   }
   return {
     eco: bestMatch.eco,
     name: bestMatch.name,
     bookPlyRange: [1, bestMatch.line.length],
+    bookExitPly: exitPly,
     continuations: findContinuations(moveList)
   };
 }

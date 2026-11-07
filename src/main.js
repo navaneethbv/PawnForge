@@ -77,6 +77,13 @@ const el = {
   evalGraph: $('evalGraph'),
   evalGraphContainer: $('evalGraphContainer'),
   gameMoveList: $('gameMoveList'),
+  gameMoveDetail: $('gameMoveDetail'),
+  puzzleCount: $('puzzleCount'),
+  puzzleStatus: $('puzzleStatus'),
+  puzzleStartBtn: $('puzzleStartBtn'),
+  puzzleSolutionBtn: $('puzzleSolutionBtn'),
+  puzzleNextBtn: $('puzzleNextBtn'),
+  puzzleClearBtn: $('puzzleClearBtn'),
   gameSummary: $('gameSummary'),
   gameSummaryContent: $('gameSummaryContent'),
   gameProgress: $('gameProgress'),
@@ -526,6 +533,11 @@ async function updateCoachHint() {
     return;
   }
 
+  if (puzzleActive()) {
+    showCoachMessage('Puzzle in progress', 'Hints are hidden until you solve the puzzle or show its solution.');
+    return;
+  }
+
   if (sparringActive && game.turn() !== sparringPlayerColor) {
     showCoachMessage('Engine to move', 'Hints resume on your turn.');
     return;
@@ -753,6 +765,7 @@ function onDragStart(_source, piece) {
 }
 
 function onDrop(source, target) {
+  if (puzzleActive()) return handlePuzzleDrop(source, target);
   if (sparringActive && (isEngineThinking || game.turn() !== sparringPlayerColor)) return 'snapback';
 
   if (game.moves({ square: source, verbose: true }).some((m) => m.to === target && m.promotion)) {
@@ -1213,15 +1226,14 @@ function runAllMoves() {
 
   const requestId = explorerRequestId;
   const total = game.moves().length;
+  const targetDepth = Number($('explorerDepthSelect').value);
+  // One engine search ranks every move together; progress arrives as each search depth completes.
   const es = new EventSourcePolyfill('/api/analyze/all-moves', {
-    payload: JSON.stringify({
-      fen: currentFen,
-      settings: { movetimeMs: Number($('movetimeSelect').value) }
-    })
+    payload: JSON.stringify({ fen: currentFen, settings: { depth: targetDepth } })
   });
   activeExplorerStream = es;
+  el.explorerProgressText.textContent = `Searching ${total} moves…`;
 
-  let evaluated = 0;
   es.onmessage = (event) => {
     if (requestId !== explorerRequestId || game.fen() !== currentFen) {
       es.close();
@@ -1233,10 +1245,9 @@ function runAllMoves() {
       return;
     }
     if (data.type === 'partial') {
-      evaluated += 1;
       const pct = Math.round(data.progress * 100);
       el.explorerProgressFill.style.width = `${pct}%`;
-      el.explorerProgressText.textContent = `${evaluated} / ${total} moves`;
+      el.explorerProgressText.textContent = `${total} moves · depth ${data.depth} / ${data.targetDepth}`;
     }
 
     if (data.type === 'final') {
@@ -1403,6 +1414,8 @@ function clearGameReview() {
   el.evalGraphContainer.hidden = true;
   el.gameMoveList.hidden = true;
   el.gameMoveList.replaceChildren();
+  el.gameMoveDetail.hidden = true;
+  el.gameMoveDetail.replaceChildren();
 }
 
 async function analyzeGame() {
@@ -1455,6 +1468,8 @@ async function analyzeGame() {
     el.evalGraphContainer.hidden = false;
     drawEvalGraph(data.plies);
     renderGameMoveList(data);
+    const added = addMistakePuzzles(data, hist, preMoveSequence);
+    renderPuzzlePanel(added ? `Added ${added} ${added === 1 ? 'puzzle' : 'puzzles'} from this game's mistakes.` : null);
     setEngineStatus('Game review complete', 'idle');
   } catch (error) {
     if (requestId !== gameReviewRequestId || error.name === 'AbortError') return;
@@ -1480,11 +1495,18 @@ function renderGameMoveList(data) {
       rows.push(row);
     }
     const whiteEval = toWhiteRelativeEval(p.evalCp, p.fen);
+    const book = bookStatus(data, i);
+    const better = betterMoveSan(p, i);
+    const titleParts = [p.category.label, formatEval(whiteEval), `loss ${(p.deltaCp / 100).toFixed(2)}`];
+    if (p.accuracy !== null && p.accuracy !== undefined) titleParts.push(`accuracy ${p.accuracy}%`);
+    if (better) titleParts.push(`better: ${better}`);
+    if (book === 'book') titleParts.push('book move');
+    if (book === 'exit') titleParts.push('left book');
     row.appendChild(h('button', {
       type: 'button',
-      class: `game-move cat-${p.category.key}`,
+      class: `game-move cat-${p.category.key}${book === 'book' ? ' book' : ''}${book === 'exit' ? ' book-exit' : ''}`,
       dataset: { ply: String(i) },
-      title: `${p.category.label} · ${formatEval(whiteEval)} · loss ${(p.deltaCp / 100).toFixed(2)}`,
+      title: titleParts.join(' · '),
       onclick: () => navigateToGamePly(i)
     }, p.san));
   });
@@ -1520,6 +1542,7 @@ function navigateToGamePly(ply) {
   });
 
   drawEvalGraph(gameReviewData.plies, ply);
+  renderMoveDetail(ply);
   void updateCoachHint();
   if (currentMoveIndex === playedMoves.length - 1) void checkSparringTurn();
 }
@@ -1538,7 +1561,10 @@ function renderGameSummary(data, hist) {
   });
 
   const acpl = (side) => (side.count > 0 ? (side.totalDelta / side.count).toFixed(1) : '0');
-  const range = data.opening.bookPlyRange;
+  const accuracyText = (value) => (value === null || value === undefined ? '–' : `${value}%`);
+  const exitPly = data.opening.bookExitPly;
+  let leftBook = '–';
+  if (data.opening.eco !== null && exitPly !== undefined) leftBook = exitPly ? moveLabel(exitPly - 1) : 'Still in book';
   const card = (label, value, cls) => h('div', { class: 'summary-card' },
     h('div', { class: 'label' }, label),
     h('div', { class: `value ${cls || ''}`.trim() }, String(value)));
@@ -1549,10 +1575,12 @@ function renderGameSummary(data, hist) {
       h('strong', {}, data.opening.name),
       h('span', { class: 'summary-meta' }, `· ${data.plyCount} plies`)),
     h('div', { class: 'summary-grid' },
+      card('White accuracy', accuracyText(data.accuracy?.white)),
+      card('Black accuracy', accuracyText(data.accuracy?.black)),
       card('White ACPL', acpl(sides.w)),
       card('Black ACPL', acpl(sides.b)),
       card('Turning points', data.turningPoints.length, data.turningPoints.length ? 'danger' : ''),
-      card('Book moves', range ? `${range[0]}–${range[1]}` : '–')),
+      card('Left book', leftBook)),
     h('table', { class: 'quality-table' },
       h('thead', {}, h('tr', {}, h('th', {}, 'Move quality'), h('th', {}, 'White'), h('th', {}, 'Black'))),
       h('tbody', {}, keys.map((key) => h('tr', {},
@@ -1560,6 +1588,189 @@ function renderGameSummary(data, hist) {
         h('td', {}, String(sides.w.counts.get(key))),
         h('td', {}, String(sides.b.counts.get(key))))))));
   el.gameSummary.hidden = false;
+}
+
+// "12. Nf3" / "12... Nc6" for a reviewed ply.
+function moveLabel(index) {
+  const fields = (gameReviewPreFens.at(index) || '').split(' ');
+  const san = gameReviewData?.plies.at(index)?.san ?? '';
+  return `${fields[5] || '?'}${fields[1] === 'b' ? '...' : '.'} ${san}`;
+}
+
+// 'book' for moves still in opening theory, 'exit' for the move that left it, otherwise null.
+function bookStatus(data, index) {
+  const exitPly = data.opening.bookExitPly;
+  if (data.opening.eco === null || exitPly === undefined) return null;
+  if (exitPly === null || index + 1 < exitPly) return 'book';
+  return index + 1 === exitPly ? 'exit' : null;
+}
+
+function playedUci(index) {
+  const move = gameReviewHistory.at(index);
+  return move ? `${move.from}${move.to}${move.promotion || ''}` : null;
+}
+
+// The engine's preferred move in SAN when it differs from the move played and the move lost ground.
+function betterMoveSan(plyData, index) {
+  const best = plyData.bestMove;
+  if (!best || ['best', 'good'].includes(plyData.category.key)) return null;
+  if (best.uci === playedUci(index)) return null;
+  return sanForUci(gameReviewPreFens.at(index), best.uci);
+}
+
+function renderMoveDetail(index) {
+  const plyData = gameReviewData?.plies.at(index);
+  if (!plyData) {
+    el.gameMoveDetail.hidden = true;
+    return;
+  }
+  const preFen = gameReviewPreFens.at(index);
+  const parts = [
+    h('span', { class: 'detail-label' }, plyData.category.label),
+    ` · ${moveLabel(index)}`
+  ];
+  if (plyData.accuracy !== null && plyData.accuracy !== undefined) parts.push(` · accuracy ${plyData.accuracy}%`);
+  const book = bookStatus(gameReviewData, index);
+  if (book === 'book') parts.push(' · book move');
+  if (book === 'exit') parts.push(' · left opening theory');
+  const children = [h('div', {}, ...parts)];
+  const better = betterMoveSan(plyData, index);
+  if (better) {
+    // The engine scores from the mover's side, so show it from White's view like the rest of the review.
+    const whiteEval = preFen.split(' ')[1] === 'b' ? -plyData.bestMove.evalCp : plyData.bestMove.evalCp;
+    children.push(h('div', {}, `Better was `, h('strong', {}, better), ` (${formatEval(whiteEval)})`));
+    const line = pvToSan(preFen, plyData.bestMove.pv.join(' '), 8)
+      .map(({ number, san }) => (number ? `${number} ${san}` : san)).join(' ');
+    if (line) children.push(h('div', { class: 'detail-line' }, line));
+  }
+  el.gameMoveDetail.className = `game-move-detail cat-${plyData.category.key}`;
+  el.gameMoveDetail.replaceChildren(...children);
+  el.gameMoveDetail.hidden = false;
+}
+
+// ── Puzzles from your mistakes ──
+// Mistakes and blunders from reviewed games become "find the engine's move" puzzles. They are kept in
+// this browser's localStorage, newest first; storage can be unavailable, so every access is guarded.
+const PUZZLE_STORAGE_KEY = 'pawnforge.mistakePuzzles';
+const PUZZLE_LIMIT = 100;
+let puzzleSession = null; // { puzzle, attempts, solved }
+
+function loadPuzzles() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(PUZZLE_STORAGE_KEY) || '[]');
+    return Array.isArray(stored) ? stored.filter((p) => typeof p?.fen === 'string' && typeof p?.solution === 'string') : [];
+  } catch (_e) {
+    return [];
+  }
+}
+
+function savePuzzles(puzzles) {
+  try { localStorage.setItem(PUZZLE_STORAGE_KEY, JSON.stringify(puzzles.slice(0, PUZZLE_LIMIT))); } catch (_e) { /* Storage is optional. */ }
+}
+
+function addMistakePuzzles(data, hist, preFens) {
+  const puzzles = loadPuzzles();
+  const known = new Set(puzzles.map((p) => p.fen));
+  const fresh = [];
+  data.plies.forEach((p, i) => {
+    const preFen = preFens.at(i);
+    if (!['mistake', 'blunder'].includes(p.category.key) || !p.bestMove || known.has(preFen)) return;
+    const move = hist.at(i);
+    if (p.bestMove.uci === `${move.from}${move.to}${move.promotion || ''}`) return;
+    known.add(preFen);
+    const fields = preFen.split(' ');
+    fresh.push({
+      fen: preFen,
+      solution: p.bestMove.uci,
+      solutionSan: sanForUci(preFen, p.bestMove.uci),
+      played: `${fields[5]}${fields[1] === 'b' ? '...' : '.'} ${p.san}`,
+      category: p.category.key,
+      solved: false
+    });
+  });
+  if (fresh.length) savePuzzles([...fresh, ...puzzles]);
+  return fresh.length;
+}
+
+function setPuzzleStatus(text, tone = '') {
+  el.puzzleStatus.textContent = text;
+  el.puzzleStatus.className = `puzzle-status ${tone}`.trim();
+}
+
+function renderPuzzlePanel(message = null) {
+  const puzzles = loadPuzzles();
+  const unsolved = puzzles.filter((p) => !p.solved).length;
+  el.puzzleCount.textContent = puzzles.length ? `${unsolved} to solve · ${puzzles.length} saved` : '';
+  el.puzzleStartBtn.disabled = unsolved === 0;
+  el.puzzleStartBtn.textContent = puzzleSession ? 'Restart puzzle' : 'Start puzzles';
+  el.puzzleClearBtn.hidden = puzzles.length === 0;
+  el.puzzleSolutionBtn.hidden = !puzzleSession || puzzleSession.solved;
+  el.puzzleNextBtn.hidden = !puzzleSession;
+  if (message) setPuzzleStatus(message);
+  else if (!puzzleSession && puzzles.length) setPuzzleStatus(unsolved ? 'Find the move the engine preferred in positions where you went wrong.' : 'All puzzles solved. Review another game to collect more.');
+}
+
+function puzzleActive() {
+  return Boolean(puzzleSession && !puzzleSession.solved && game.fen() === puzzleSession.puzzle.fen);
+}
+
+function startPuzzle(puzzle) {
+  if (!puzzle) {
+    puzzleSession = null;
+    renderPuzzlePanel('All puzzles solved. Review another game to collect more.');
+    return;
+  }
+  if (sparringActive) el.sparringToggle.click();
+  puzzleSession = { puzzle, attempts: 0, solved: false };
+  game = new Chess(puzzle.fen);
+  loadPosition(puzzle.fen);
+  setBoardFlipped(puzzle.fen.split(' ')[1] === 'b');
+  renderPuzzlePanel();
+  setPuzzleStatus(`${puzzle.fen.split(' ')[1] === 'w' ? 'White' : 'Black'} to move. In your game you played ${puzzle.played}; find the better move.`);
+}
+
+function nextPuzzle() {
+  const puzzles = loadPuzzles();
+  const current = puzzleSession?.puzzle.fen;
+  const unsolved = puzzles.filter((p) => !p.solved);
+  const after = unsolved.findIndex((p) => p.fen === current);
+  startPuzzle(unsolved.at(after + 1) ?? unsolved.find((p) => p.fen !== current) ?? null);
+}
+
+// Checks a move made on the board while a puzzle is open; promotions are taken as a queen.
+function handlePuzzleDrop(source, target) {
+  const session = puzzleSession;
+  let move;
+  try { move = game.move({ from: source, to: target, promotion: 'q' }); } catch (_e) { return 'snapback'; }
+  if (!move) return 'snapback';
+  const uci = `${move.from}${move.to}${move.promotion || ''}`;
+  if (uci !== session.puzzle.solution) {
+    game.undo();
+    session.attempts += 1;
+    setPuzzleStatus(`${move.san} is not the engine's move. Try again${session.attempts >= 2 ? ', or show the solution' : ''}.`, 'retry');
+    return 'snapback';
+  }
+  session.solved = true;
+  savePuzzles(loadPuzzles().map((p) => (p.fen === session.puzzle.fen ? { ...p, solved: true } : p)));
+  commitMove(move, { syncBoard: false });
+  renderPuzzlePanel();
+  setPuzzleStatus(`Correct: ${move.san}${session.attempts ? ` (after ${session.attempts} ${session.attempts === 1 ? 'try' : 'tries'})` : ''}.`, 'success');
+  return undefined;
+}
+
+function showPuzzleSolution() {
+  if (!puzzleActive()) return;
+  const { solution, solutionSan } = puzzleSession.puzzle;
+  clearMoveArrow();
+  renderMoveArrow(solution.slice(0, 2), solution.slice(2, 4), 1);
+  setPuzzleStatus(`The engine's move is ${solutionSan}. Play it on the board to finish.`, 'retry');
+}
+
+function clearPuzzles() {
+  savePuzzles([]);
+  puzzleSession = null;
+  clearMoveArrow();
+  renderPuzzlePanel('Puzzles cleared. Review a game to collect new ones.');
 }
 
 function classifyLabel(key) {
@@ -1771,6 +1982,10 @@ function bindUI() {
   $('analyzePositionBtn').addEventListener('click', analyzePosition);
   $('analyzeAllMovesBtn').addEventListener('click', runAllMoves);
   $('analyzeGameBtn').addEventListener('click', analyzeGame);
+  el.puzzleStartBtn.addEventListener('click', () => (puzzleSession ? startPuzzle(puzzleSession.puzzle) : nextPuzzle()));
+  el.puzzleNextBtn.addEventListener('click', nextPuzzle);
+  el.puzzleSolutionBtn.addEventListener('click', showPuzzleSolution);
+  el.puzzleClearBtn.addEventListener('click', clearPuzzles);
   $('openingBtn').addEventListener('click', detectOpening);
 
   el.moveNavStart.addEventListener('click', () => jumpToHistoryPly(-1));
@@ -1882,6 +2097,7 @@ board = window.Chessboard('board', {
 });
 
 initTabs();
+renderPuzzlePanel();
 bindUI();
 syncOverlaySize();
 renderMoves();

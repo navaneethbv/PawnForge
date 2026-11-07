@@ -323,7 +323,22 @@
               <canvas id="evalGraph" width="700" height="180" aria-label="Evaluation graph. Click to jump to a move."></canvas>
             </div>
 
+            <div id="gameMoveDetail" class="game-move-detail" role="status" aria-live="polite" hidden></div>
             <div id="gameMoveList" class="game-move-list" hidden></div>
+
+            <div id="puzzlePanel" class="puzzle-panel">
+              <div class="subsection-header">
+                <h3>Practice your mistakes</h3>
+                <span id="puzzleCount" class="summary-meta"></span>
+              </div>
+              <p id="puzzleStatus" class="puzzle-status">Review a game to turn its mistakes and blunders into puzzles: find the move the engine preferred.</p>
+              <div class="game-controls-row">
+                <button id="puzzleStartBtn" class="btn btn-primary" type="button" disabled>Start puzzles</button>
+                <button id="puzzleSolutionBtn" class="btn" type="button" hidden>Show solution</button>
+                <button id="puzzleNextBtn" class="btn" type="button" hidden>Next puzzle</button>
+                <button id="puzzleClearBtn" class="btn" type="button" hidden>Clear puzzles</button>
+              </div>
+            </div>
           </div>
 
           <!-- Tab: Move Explorer -->
@@ -335,13 +350,13 @@
               </div>
               <div class="inline-controls">
                 <label class="field field-inline">
-                  <span class="field-label">Time per move</span>
-                  <select id="movetimeSelect">
-                    <option value="50">50 ms</option>
-                    <option value="80">80 ms</option>
-                    <option value="120" selected>120 ms</option>
-                    <option value="250">250 ms</option>
-                    <option value="500">500 ms</option>
+                  <span class="field-label">Depth</span>
+                  <select id="explorerDepthSelect">
+                    <option value="8">8 (fastest)</option>
+                    <option value="10">10</option>
+                    <option value="12" selected>12</option>
+                    <option value="14">14</option>
+                    <option value="16">16 (strongest)</option>
                   </select>
                 </label>
                 <button id="analyzeAllMovesBtn" class="btn btn-primary" type="button">

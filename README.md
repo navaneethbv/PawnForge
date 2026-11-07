@@ -271,6 +271,8 @@ Cancelling a queued search releases its capacity immediately without interruptin
 Streaming failures are sent as SSE error events.
 Shutdown terminates the engine children.
 An LRU cache holds up to 500 results for one hour.
+Engine results are also cached on disk in `.cache/engine/` (git-ignored), so reopening a reviewed game or a position is instant after a restart. Entries are tied to the Stockfish build, so updating the engine starts a fresh cache, and the oldest entries are pruned beyond 20,000. Set `PAWNFORGE_CACHE_DIR` to move the cache, or to `off` to keep results in memory only; `/api/status` reports the directory as `diskCache`.
+On start the server launches every engine worker in the background (loading the network and allocating the hash), so the first request does not wait for it.
 Game review analyzes each distinct position once. The positions are split into contiguous runs in game order, one run per engine worker, so each worker reuses its hash from the previous position.
 Each engine worker uses a 64 MB hash table; set `PAWNFORGE_ENGINE_HASH_MB` (16–2048) to change it. `/api/status` reports it as `engineHashMb`.
 

@@ -91,6 +91,7 @@ test('unsafe positions are rejected before they reach Stockfish', () => {
     '4k3/8/8/8/8/8/8/P3K3 w - - 0 1', // Unpromoted pawn.
     '4k3/8/8/8/8/8/8/4K3 w K - 0 1', // Missing castling rook.
     '4k3/8/8/8/8/8/8/4K3 w - d6 0 1', // Missing en passant pawn.
+    '4k3/8/8/8/3pP3/8/8/4K3 w - d3 0 2', // En passant square on the wrong side for the mover.
     START_FEN.replace('0 1', '0 2147483647')
   ];
   for (const fen of invalid) assert.throws(() => validateFen(fen), { statusCode: 400 });
@@ -171,4 +172,8 @@ test('book exit is the first move no book line contains', () => {
   assert.equal(bookExitPly(['e4+', 'e5!']), null);
   assert.equal(detectOpening(['e4', 'e5', 'Nf3', 'Nc6', 'Bb5', 'a6', 'h4']).bookExitPly, 7);
   assert.equal(detectOpening(['e4'], { startFen: '4k3/8/8/8/8/8/8/4K3 w - - 0 1' }).bookExitPly, null);
+});
+
+test('parsePgnMoves drops numeric annotation glyphs', () => {
+  assert.deepEqual(parsePgnMoves('1. e4 $1 e5 $14 2. Nf3 $2 $18 Nc6 1-0'), ['e4', 'e5', 'Nf3', 'Nc6']);
 });

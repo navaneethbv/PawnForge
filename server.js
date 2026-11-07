@@ -1,4 +1,5 @@
 import { EngineWorker } from './engine-worker.js';
+import { DiskCache } from './disk-cache.js';
 import {
   ENGINE_ELO_MAX, ENGINE_ELO_MIN, HttpError, START_FEN, chooseLosingMove, clampEval, classify,
   detectOpening, gameAccuracy, mapWithConcurrency, moveAccuracy, parsePgnMoves, parseScore, requireInteger, validateFen
@@ -97,6 +98,29 @@ class LRUCache {
 
 const cache = new LRUCache();
 
+// Engine results also go to disk, so reopening a reviewed game is instant even after a restart.
+// PAWNFORGE_CACHE_DIR moves it; set it to "off" to keep results in memory only. Entries are tied to
+// the engine build, so updating Stockfish starts a fresh cache.
+const cacheDirSetting = process.env.PAWNFORGE_CACHE_DIR ?? join(__dirname, '.cache', 'engine');
+const diskCache = ENGINE_VERSION && cacheDirSetting !== 'off'
+  ? new DiskCache(resolve(cacheDirSetting), { namespace: ENGINE_VERSION })
+  : null;
+if (diskCache) void diskCache.prune();
+
+// Returns a cached engine result from memory or disk, or computes and stores it in both.
+async function cachedResult(key, compute) {
+  if (cache.has(key)) return cache.get(key);
+  const stored = await diskCache?.get(key);
+  if (stored !== undefined) {
+    cache.set(key, stored);
+    return stored;
+  }
+  const value = await compute();
+  cache.set(key, value);
+  void diskCache?.set(key, value);
+  return value;
+}
+
 // Transposition table size per engine worker, in MB. Stockfish's default (16) is small for depth 16-20.
 const configuredHash = Number(process.env.PAWNFORGE_ENGINE_HASH_MB ?? 64);
 const ENGINE_HASH_MB = Number.isInteger(configuredHash) && configuredHash >= 16 && configuredHash <= 2048 ? configuredHash : 64;
@@ -126,9 +150,7 @@ class EnginePool {
   async analyzePosition({ fen, depth = 12, multipv = 3, searchMoves = [], worker = null, signal }) {
     if (!this.enabled) throw new Error('Stockfish is not available. Set STOCKFISH_BIN or build engine/Stockfish.');
     const key = `pos:${fen}:${depth}:${multipv}:${searchMoves.join(',')}`;
-    if (cache.has(key)) return cache.get(key);
-
-    const result = await (worker ?? this.acquire()).run(async (w) => {
+    return cachedResult(key, () => (worker ?? this.acquire()).run(async (w) => {
       w.send(`setoption name MultiPV value ${multipv}`);
       w.send(`position fen ${fen}`);
       w.send(searchMoves.length ? `go depth ${depth} searchmoves ${searchMoves.join(' ')}` : `go depth ${depth}`);
@@ -138,13 +160,12 @@ class EnginePool {
       while (true) {
         const line = await w.waitFor(() => true, 8000);
         if (line.startsWith('bestmove')) break;
-        if (line.startsWith('info')) {
-          if (/ score mate 0\b/.test(line)) {
-            checkmateScore = parseScore('mate', 0);
-          }
-          if (line.includes(' pv ') && line.includes(' multipv ')) {
-            lines.push(line);
-          }
+        if (!line.startsWith('info')) continue;
+        if (/ score mate 0\b/.test(line)) {
+          checkmateScore = parseScore('mate', 0);
+        }
+        if (line.includes(' pv ') && line.includes(' multipv ')) {
+          lines.push(line);
         }
       }
 
@@ -159,10 +180,7 @@ class EnginePool {
       const topMoves = [...topById.values()].sort((a, b) => a.rank - b.rank);
       const bestEvalCp = topMoves.length > 0 ? topMoves[0].evalCp : (checkmateScore ?? 0);
       return { fen, topMoves, bestEvalCp, source: 'stockfish' };
-    }, signal);
-
-    cache.set(key, result);
-    return result;
+    }, signal));
   }
 
   // Scores every move in `moves` with one MultiPV search (one line per move), so all scores come from
@@ -170,9 +188,7 @@ class EnginePool {
   // the scores so far, so callers can show a ranking long before the search ends.
   async analyzeAllMoves({ fen, moves, depth, signal, onDepth }) {
     if (!this.enabled) throw new Error('Stockfish is not available. Set STOCKFISH_BIN or build engine/Stockfish.');
-    const key = `all:${fen}:${depth}`;
-    if (cache.has(key)) return cache.get(key);
-    const result = await this.acquire().run(async (w) => {
+    return cachedResult(`all:${fen}:${depth}`, () => this.acquire().run(async (w) => {
       w.send(`setoption name MultiPV value ${moves.length}`);
       w.send(`position fen ${fen}`);
       w.send(`go depth ${depth} searchmoves ${moves.join(' ')}`);
@@ -193,16 +209,12 @@ class EnginePool {
         }
       }
       return rowsOf(latest);
-    }, signal);
-    cache.set(key, result);
-    return result;
+    }, signal));
   }
 
   async legalMoves(fen, signal) {
     if (!this.enabled) throw new Error('Stockfish is not available. Set STOCKFISH_BIN or build engine/Stockfish.');
-    const key = `moves:${fen}`;
-    if (cache.has(key)) return cache.get(key);
-    const moves = await this.acquire().run(async (w) => {
+    return cachedResult(`moves:${fen}`, () => this.acquire().run(async (w) => {
       w.send(`position fen ${fen}`);
       w.send('go perft 1');
       const out = [];
@@ -213,9 +225,16 @@ class EnginePool {
         if (m) out.push(m[1]);
       }
       return out;
-    }, signal);
-    cache.set(key, moves);
-    return moves;
+    }, signal));
+  }
+
+  // Starts every engine and waits for its handshake (process start, network load, hash allocation),
+  // so the first real request does not pay for it. Failures are left for that request to report.
+  async warmUp() {
+    if (!this.enabled) return;
+    const started = Date.now();
+    await Promise.allSettled(this.workers.map((worker) => worker.run(async () => {})));
+    console.log(`Engines ready in ${Date.now() - started}ms`);
   }
 
   // Rated play is randomised by Stockfish itself, so it is never cached.
@@ -257,7 +276,9 @@ function sendJson(res, status, data) {
 
 function parseBody(req, signal, maxBytes = 10 * 1024 * 1024) {
   return new Promise((resolve, reject) => {
-    let raw = '';
+    // Collect raw chunks and decode once: decoding chunk by chunk would split a multi-byte
+    // character (an accented player name in a PGN, say) that straddles two chunks.
+    const chunks = [];
     let bytes = 0;
     const cleanup = () => {
       req.removeListener('data', onData);
@@ -274,10 +295,11 @@ function parseBody(req, signal, maxBytes = 10 * 1024 * 1024) {
         req.resume();
         return;
       }
-      raw += data;
+      chunks.push(data);
     };
     const onEnd = () => {
       cleanup();
+      const raw = Buffer.concat(chunks).toString('utf8');
       try { resolve(raw ? JSON.parse(raw) : {}); }
       catch { reject(new HttpError(400, 'Request body must be valid JSON.')); }
     };
@@ -536,6 +558,7 @@ async function dispatchApi(req, res, signal) {
       engineHashMb: ENGINE_HASH_MB,
       workers: pool.size,
       cacheSize: cache.cache.size,
+      diskCache: diskCache ? diskCache.dir : null,
       uptime: process.uptime()
     });
   }
@@ -646,7 +669,8 @@ const server = http.createServer((req, res) => {
   if (req.url.startsWith('/api/')) return handleApi(req, res);
   return serveStatic(req, res);
 }).listen(PORT, '127.0.0.1', () => {
-  console.log(`PawnForge running at http://localhost:${PORT} | stockfish=${pool.enabled ? 'on' : 'off'} | workers=${pool.size} | hash=${ENGINE_HASH_MB}MB`);
+  console.log(`PawnForge running at http://localhost:${PORT} | stockfish=${pool.enabled ? 'on' : 'off'} | workers=${pool.size} | hash=${ENGINE_HASH_MB}MB | disk cache=${diskCache ? diskCache.dir : 'off'}`);
+  void pool.warmUp();
 });
 
 for (const signal of ['SIGTERM', 'SIGINT']) {

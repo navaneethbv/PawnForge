@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 import { Chess } from '../../vendor/chess.js';
+import { connect } from 'node:net';
 const start = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
 const afterE4 = 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1';
 async function load(page) {
@@ -827,4 +828,50 @@ test('a queued partial review cannot replace a stream error', async ({ page }) =
   await expect(page.locator('#gameMoveList')).toContainText('Engine disconnected');
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   await expect(page.locator('#gameMoveList')).toContainText('Engine disconnected');
+});
+
+test('a request body split inside a multi-byte character is decoded intact', async () => {
+  // Raw HTTP so the body can be sent in two writes that cut "é" (two bytes in UTF-8) in half.
+  const fen = afterE4;
+  const body = Buffer.from(JSON.stringify({ moves: ['Né4'], fenSequence: [fen], preMoveSequence: [start], settings: { depth: 2 } }));
+  const cut = body.indexOf(Buffer.from('é')) + 1;
+  const response = await new Promise((resolve, reject) => {
+    const socket = connect(4189, '127.0.0.1', async () => {
+      socket.write(`POST /api/analyze/game HTTP/1.1\r\nHost: 127.0.0.1:4189\r\nContent-Type: application/json\r\nContent-Length: ${body.length}\r\nConnection: close\r\n\r\n`);
+      socket.write(body.subarray(0, cut));
+      await new Promise((r) => setTimeout(r, 50));
+      // Keep the socket open for the reply; the server closes it (Connection: close).
+      socket.write(body.subarray(cut));
+    });
+    let text = '';
+    socket.setEncoding('utf8');
+    socket.on('data', (chunk) => { text += chunk; });
+    socket.on('end', () => resolve(text));
+    socket.on('error', reject);
+  });
+  expect(response).toContain('200 OK');
+  expect(JSON.parse(response.slice(response.indexOf('\r\n\r\n') + 4).replace(/^[0-9a-f]+\r\n/i, '').replace(/\r\n0\r\n\r\n$/, '')).plies[0].san).toBe('Né4');
+});
+
+test('arrow keys skip moves whose review is still streaming', async ({ page }) => {
+  await load(page);
+  const push = await controlledStream(page, '/api/analyze/game');
+  const replay = new Chess();
+  const plies = ['e4', 'e5', 'Nf3', 'Nc6'].map((san, i) => {
+    replay.move(san);
+    return { ply: i + 1, san, fen: replay.fen(), mover: i % 2 ? 'b' : 'w', evalCp: 0, deltaCp: 0, accuracy: 100, category: { key: 'best', label: 'Best' }, bestMove: null };
+  });
+  await page.locator('[data-tab="game-review"]').click();
+  await page.locator('#pgnInput').fill('1. e4 e5 2. Nf3 Nc6 *');
+  await page.locator('#analyzeGameBtn').click();
+  await push({ type: 'ply', ply: plies[0] });
+  await push({ type: 'ply', ply: plies[3] });
+  await page.locator('.game-move', { hasText: 'e4' }).click();
+  await expect(page.locator('.game-move.active')).toHaveText('e4');
+  // e5 and Nf3 are still pending, so → goes straight to Nc6, and ← comes back to e4.
+  await page.locator('#board').click({ position: { x: 1, y: 1 } }).catch(() => {});
+  await page.keyboard.press('ArrowRight');
+  await expect(page.locator('.game-move.active')).toHaveText('Nc6');
+  await page.keyboard.press('ArrowLeft');
+  await expect(page.locator('.game-move.active')).toHaveText('e4');
 });

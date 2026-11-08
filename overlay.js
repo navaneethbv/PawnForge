@@ -1338,7 +1338,10 @@
     const data = await engineRequest({ fen: snapshot.fen, settings: { depth, square } }, {
       channel: 'piece', relayId: `${instanceId}:piece:${requestId}`, controller: pieceController
     });
-    return Array.isArray(data?.moves) ? data.moves : [];
+    if (!Array.isArray(data?.moves)) {
+      throw new Error('Update and restart the local PawnForge server. It did not return piece scores.');
+    }
+    return data.moves;
   }
 
   async function scorePieceMoves(square) {

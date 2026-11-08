@@ -711,3 +711,16 @@ test("a piece's best move is green even when another piece has a better move", a
   await page.locator('#pawnforge-piece-format').selectOption('loss');
   expect(await markers.allTextContents()).toEqual(['−1.5', '−2.0']);
 });
+
+test('piece scoring explains when the local server only returns position analysis', async ({ page }) => {
+  await openSiteUrl(page, 'http://lichess.org/analysis');
+  await chessComFixture(page);
+  await page.route('**/api/analyze/position', route => route.fulfill({
+    json: { topMoves: [{ uci: 'h7h6', evalCp: -10, pv: 'h7h6' }] }
+  }));
+  await injectWithPieceScores(page);
+  await page.locator('#pawnforge-approximate').check();
+  await expect(page.locator('#pawnforge-hud-candidates button').first()).toBeVisible();
+  await selectSquare(page, 'd7');
+  await expect(page.locator('#pawnforge-piece-status')).toContainText('Update and restart the local PawnForge server');
+});

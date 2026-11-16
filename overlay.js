@@ -67,6 +67,12 @@
   let pendingAnalysis = null;
   const instanceId = crypto.getRandomValues(new Uint32Array(4)).join('-');
   let pollTimer = 0;
+  let boardObserver = null;
+  let boardObserveTarget = null;
+  let boardSettleTimer = 0;
+  let stabilityTimer = 0;
+  let boardVersion = 0;
+  let lastCheckedBoardVersion = -1;
   let pointerElements = [];
   // The last analysed position, kept so the next one can be judged as the move that followed it.
   let previousAnalysis = null;
@@ -85,12 +91,13 @@
   let pieceCacheContext = '';
   const pieceMoveCache = new Map();
 
-  // A position must read the same on two consecutive polls before it is analysed, which skips
-  // mid-animation frames while keeping move-to-analysis latency well under half a second.
+  // A board MutationObserver triggers analysis ~60ms after DOM updates settle; the interval is a
+  // lightweight fallback for non-DOM FEN changes and extension-context health checks.
   const POLL_INTERVAL_MS = 250;
+  const BOARD_SETTLE_MS = 60;
   // Board piece elements; lichess's drag "ghost" copy of a piece is not on the board.
   const PIECE_SELECTOR = '.piece:not(.ghost), piece:not(.ghost), [data-piece]:not(.ghost), [data-color][data-type]:not(.ghost)';
-  const POSITION_STABILITY_MS = 200;
+  const POSITION_STABILITY_MS = 80;
 
   const style = document.createElement('style');
   style.id = 'pawnforge-style';
@@ -808,12 +815,39 @@
     return pageFenPromise;
   }
 
+  function observeBoard(element) {
+    if (!element || element === boardObserveTarget) return;
+    boardObserver?.disconnect();
+    boardObserveTarget = element;
+    boardVersion += 1;
+    if (typeof MutationObserver !== 'function') return;
+    boardObserver = new MutationObserver(() => {
+      boardVersion += 1;
+      window.clearTimeout(boardSettleTimer);
+      boardSettleTimer = window.setTimeout(() => {
+        if (active) void analyzePosition(false);
+      }, BOARD_SETTLE_MS);
+    });
+    boardObserver.observe(element, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['class', 'style', 'data-piece', 'data-color', 'data-type']
+    });
+  }
+
   async function detectCurrentPosition() {
     const manualFen = normaliseFen(fenEl.value);
     if (manualFen) return { fen: manualFen, source: 'manual FEN', board: findBoardModel() };
     const pageFen = await readPageFen();
-    if (pageFen) return { fen: pageFen, source: 'page FEN', board: findBoardModel() };
-    return readDomPosition();
+    if (pageFen) {
+      const board = findBoardModel();
+      observeBoard(board?.element);
+      return { fen: pageFen, source: 'page FEN', board };
+    }
+    const dom = readDomPosition();
+    observeBoard(dom?.board?.element);
+    return dom;
   }
 
   function squareRect(board, square) {
@@ -837,11 +871,13 @@
     element.style.height = `${Math.max(0, rect.height - 4)}px`;
   }
 
-  function updatePieceMarkerPositions() {
+  function updatePieceMarkerPositions(cachedBoard = null) {
     const element = pieceScores?.board?.element;
     if (!pieceMarkers.length || !element) return;
     if (!element.isConnected) { clearPieceScores(); return; }
-    const board = { element, rect: element.getBoundingClientRect(), orientation: boardOrientation(element) };
+    const board = cachedBoard && cachedBoard.element === element
+      ? cachedBoard
+      : { element, rect: element.getBoundingClientRect(), orientation: boardOrientation(element) };
     for (const marker of pieceMarkers) {
       const rect = squareRect(board, marker.dataset.square);
       if (rect) placeOnSquare(marker, rect);
@@ -849,20 +885,22 @@
   }
 
   function updatePointerPositions() {
-    updatePieceMarkerPositions();
-    if (!pointerMove && !verdictMarker) return;
     const element = currentSnapshot?.board?.element;
-    if (!element?.isConnected) { removePointers(); return; }
-    const board = { element, rect: element.getBoundingClientRect(), orientation: boardOrientation(element) };
+    const board = element?.isConnected
+      ? { element, rect: element.getBoundingClientRect(), orientation: boardOrientation(element) }
+      : null;
+    updatePieceMarkerPositions(board);
+    if (!pointerMove && !verdictMarker) return;
+    if (!board) { removePointers(); return; }
     const verdictRect = verdictMarker && squareRect(board, verdictMarker.dataset.square);
     if (verdictRect) placeOnSquare(verdictMarker, verdictRect);
     if (!pointerMove) return;
     const origin = squareRect(board, pointerMove.from);
     const target = squareRect(board, pointerMove.to);
     const [originEl, targetEl] = pointerElements;
-    for (const [element, rect] of [[originEl, origin], [targetEl, target]]) {
-      if (!element || !rect) continue;
-      placeOnSquare(element, rect);
+    for (const [el, rect] of [[originEl, origin], [targetEl, target]]) {
+      if (!el || !rect) continue;
+      placeOnSquare(el, rect);
     }
   }
 
@@ -1196,10 +1234,67 @@
     return snapshot.fen.split(' ')[1] === 'w' ? last + 1 : last;
   }
 
+  function streamPortRequest(payload, { channel, relayId, controller, onPartial }) {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      let port;
+      const cleanup = () => {
+        controller.signal.removeEventListener('abort', onAbort);
+        try { port?.disconnect(); } catch { /* ignore */ }
+      };
+      const onAbort = () => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(new DOMException('The operation was aborted.', 'AbortError'));
+      };
+      controller.signal.addEventListener('abort', onAbort, { once: true });
+      try {
+        port = extensionRuntime.connect({ name: 'pawnforge-stream' });
+      } catch (error) {
+        cleanup();
+        reject(error);
+        return;
+      }
+      port.onDisconnect.addListener(() => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(new Error('Extension relay disconnected.'));
+      });
+      port.onMessage.addListener((message) => {
+        if (settled) return;
+        if (message?.type === 'error') {
+          settled = true;
+          cleanup();
+          reject(new Error(message.error || 'Engine error.'));
+          return;
+        }
+        if (message?.type !== 'chunk') return;
+        const event = message.payload;
+        if (event?.type === 'partial') {
+          onPartial?.(event.result, event.depth, event.targetDepth);
+        } else if (event?.type === 'final') {
+          settled = true;
+          cleanup();
+          resolve(event.result);
+        } else if (event?.type === 'error') {
+          settled = true;
+          cleanup();
+          reject(new Error(event.error || 'Engine error.'));
+        }
+      });
+      port.postMessage({ type: 'analyze-position', channel, requestId: relayId, endpoint, payload });
+    });
+  }
+
   // Sends one engine request, through the extension relay when running as an extension. Each
   // channel has its own relay slot, so piece move scores never cancel the main analysis.
-  async function engineRequest(payload, { channel, relayId, controller, directUrl = endpoint, directBody = payload }) {
+  async function engineRequest(payload, { channel, relayId, controller, directUrl = endpoint, directBody = payload, onPartial = null }) {
     if (isExtension) {
+      if (onPartial && typeof extensionRuntime?.connect === 'function') {
+        return streamPortRequest(payload, { channel, relayId, controller, onPartial });
+      }
       controller.signal.addEventListener('abort', () => {
         try {
           extensionRuntime.sendMessage({ type: 'cancel-analysis', channel, requestId: relayId }).catch(() => {});
@@ -1211,8 +1306,33 @@
     }
     const response = await fetch(directUrl, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(directBody), signal: controller.signal
+      body: JSON.stringify(onPartial ? { ...directBody, stream: true } : directBody),
+      signal: controller.signal
     });
+    const contentType = response.headers?.get?.('content-type') || '';
+    if (onPartial && response.ok && contentType.includes('text/event-stream') && response.body) {
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let finalResult = null;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const events = buffer.split('\n\n');
+        buffer = events.pop() || '';
+        for (const eventText of events) {
+          const line = eventText.split('\n').find((entry) => entry.startsWith('data: '));
+          if (!line) continue;
+          const event = JSON.parse(line.slice(6));
+          if (event.type === 'partial') onPartial(event.result, event.depth, event.targetDepth);
+          else if (event.type === 'final') finalResult = event.result;
+          else if (event.type === 'error') throw new Error(event.error || 'Engine error.');
+        }
+      }
+      if (finalResult) return finalResult;
+      throw new Error('Analysis stream ended before completion.');
+    }
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || `Engine returned HTTP ${response.status}`);
     return data;
@@ -1402,8 +1522,16 @@
   async function analyzePosition(force = false, { optIn = false } = {}) {
     if (!active) return;
     updateBotRow();
+    // Skip expensive cross-world executeScript polls when a live MutationObserver sees no DOM change,
+    // no new position is settling, and synchronous same-world FEN sources have not changed either.
+    if (!force && !analysisInFlight && lastPositionKey && observedPositionKey === lastPositionKey && boardObserveTarget?.isConnected && boardVersion === lastCheckedBoardVersion && !normaliseFen(fenEl.value)) {
+      const sameWorld = readSameWorldFen();
+      if (!sameWorld || sameWorld === lastPositionKey) return;
+    }
+    const checkedVersion = boardVersion;
     const snapshot = await detectCurrentPosition();
     if (!active) return;
+    if (boardObserveTarget?.isConnected) lastCheckedBoardVersion = checkedVersion;
     if (analysisInFlight) {
       if (force || snapshot?.fen !== lastPositionKey) {
         analysisRequest += 1;
@@ -1458,6 +1586,10 @@
       if (snapshot.fen !== observedPositionKey) {
         observedPositionKey = snapshot.fen;
         observedPositionAt = now;
+        window.clearTimeout(stabilityTimer);
+        stabilityTimer = window.setTimeout(() => {
+          if (active) void analyzePosition(false);
+        }, POSITION_STABILITY_MS + 10);
         return;
       }
       if (now - observedPositionAt < POSITION_STABILITY_MS) return;
@@ -1482,6 +1614,7 @@
     analysisInFlight = true;
     analysisController = new AbortController();
 
+    const startBoardVersion = boardVersion;
     try {
       const play = botPlayRequest(snapshot);
       const payload = play ? { fen: snapshot.fen, play } : { fen: snapshot.fen, settings: { depth, multiPv: CANDIDATE_COUNT } };
@@ -1494,10 +1627,18 @@
         relayId: `${instanceId}:${requestId}`,
         controller: analysisController,
         directUrl: play ? new URL('/api/play/move', endpoint) : endpoint,
-        directBody: play ? { fen: snapshot.fen, ...play } : payload
+        directBody: play ? { fen: snapshot.fen, ...play } : payload,
+        onPartial: play ? null : (partial, completedDepth, targetDepth) => {
+          if (!active || requestId !== analysisRequest || snapshot.fen !== lastPositionKey) return;
+          if (Array.isArray(partial?.topMoves) && partial.topMoves.length > 0) {
+            renderCandidates(partial.topMoves);
+            setHint(`Refining depth ${completedDepth}/${targetDepth}...`);
+          }
+        }
       });
       if (!active || requestId !== analysisRequest || snapshot.fen !== lastPositionKey) return;
-      const latestSnapshot = await detectCurrentPosition();
+      const boardUnchanged = boardObserveTarget?.isConnected && boardVersion === startBoardVersion && !normaliseFen(fenEl.value);
+      const latestSnapshot = boardUnchanged ? snapshot : await detectCurrentPosition();
       if (!active || requestId !== analysisRequest) return;
       if (!latestSnapshot?.fen || latestSnapshot.fen !== snapshot.fen) {
         lastPositionKey = '';
@@ -1630,6 +1771,11 @@
     active = false;
     analysisRequest += 1;
     analysisController?.abort();
+    boardObserver?.disconnect();
+    boardObserver = null;
+    boardObserveTarget = null;
+    window.clearTimeout(boardSettleTimer);
+    window.clearTimeout(stabilityTimer);
     window.clearInterval(pollTimer);
     pollTimer = 0;
     window.removeEventListener('mousemove', onMouseMove);

@@ -22,6 +22,24 @@ function playSettings(play) {
   return null;
 }
 
+function resolveLocalEndpoint(endpoint, play) {
+  let url;
+  try {
+    url = new URL(endpoint);
+    if (url.protocol !== 'http:' || url.username || url.password || url.pathname !== '/api/analyze/position' || url.search || url.hash) {
+      throw new Error('Only the local PawnForge analysis endpoint is allowed.');
+    }
+  } catch (error) {
+    return { error: error.message };
+  }
+  if (!['127.0.0.1', 'localhost'].includes(url.hostname)) {
+    return { error: 'Only the local PawnForge analysis endpoint is allowed.' };
+  }
+  const localEndpoint = new URL(play ? 'http://127.0.0.1/api/play/move' : 'http://127.0.0.1/api/analyze/position');
+  localEndpoint.port = String(Number(url.port || 80));
+  return { localEndpoint };
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === 'cancel-analysis' && sender.tab?.id) {
     const request = requests.get(slotKey(sender.tab.id, message.channel));
@@ -30,39 +48,107 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
   if (message?.type !== 'analyze-position' || !sender.tab?.id) return undefined;
   const key = slotKey(sender.tab.id, message.channel);
-  let url;
-  try {
-    url = new URL(message.endpoint);
-    if (url.protocol !== 'http:' || url.username || url.password || url.pathname !== '/api/analyze/position' || url.search || url.hash) throw new Error('Only the local PawnForge analysis endpoint is allowed.');
-  } catch (error) { sendResponse({ error: error.message }); return false; }
-  if (['127.0.0.1', 'localhost'].includes(url.hostname)) {
+  const play = message.payload?.play ? playSettings(message.payload.play) : null;
+  const { localEndpoint, error } = resolveLocalEndpoint(message.endpoint, play);
+  if (error) { sendResponse({ error }); return false; }
+
+  requests.get(key)?.controller.abort();
+  const controller = new AbortController();
+  const request = { controller, requestId: message.requestId };
+  requests.set(key, request);
+  const timer = setTimeout(() => controller.abort(), 20000);
+  const body = play
+    ? { fen: message.payload?.fen, ...play }
+    : { fen: message.payload?.fen, settings: engineSettings(message.payload?.settings) };
+  fetch(localEndpoint, {
+    redirect: 'error',
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal: controller.signal
+  }).then(async (response) => {
+    const data = await response.json();
+    sendResponse(response.ok ? { data } : { error: data.error || `HTTP ${response.status}` });
+  }).catch((err) => sendResponse({ error: err.message })).finally(() => {
+    clearTimeout(timer);
+    if (requests.get(key) === request) requests.delete(key);
+  });
+  return true;
+});
+
+// Streams progressive depth updates for normal position analysis over a long-lived port.
+chrome.runtime.onConnect?.addListener((port) => {
+  if (port.name !== 'pawnforge-stream') return;
+  const tabId = port.sender?.tab?.id;
+  if (!tabId) { port.disconnect(); return; }
+  let activeKey = null;
+  let activeRequest = null;
+
+  const safePost = (msg) => {
+    try { port.postMessage(msg); } catch { /* Port disconnected. */ }
+  };
+
+  port.onDisconnect.addListener(() => {
+    if (activeRequest) activeRequest.controller.abort();
+    if (activeKey && requests.get(activeKey) === activeRequest) requests.delete(activeKey);
+  });
+
+  port.onMessage.addListener(async (message) => {
+    if (message?.type !== 'analyze-position') return;
+    const key = slotKey(tabId, message.channel);
+    const { localEndpoint, error } = resolveLocalEndpoint(message.endpoint, null);
+    if (error) { safePost({ type: 'error', error }); return; }
+
     requests.get(key)?.controller.abort();
     const controller = new AbortController();
     const request = { controller, requestId: message.requestId };
+    activeKey = key;
+    activeRequest = request;
     requests.set(key, request);
     const timer = setTimeout(() => controller.abort(), 20000);
-    const play = message.payload?.play ? playSettings(message.payload.play) : null;
-    const localEndpoint = new URL(play ? 'http://127.0.0.1/api/play/move' : 'http://127.0.0.1/api/analyze/position');
-    localEndpoint.port = String(Number(url.port || 80));
-    const body = play
-      ? { fen: message.payload?.fen, ...play }
-      : { fen: message.payload?.fen, settings: engineSettings(message.payload?.settings) };
-    fetch(localEndpoint, {
-      redirect: 'error',
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: controller.signal
-    }).then(async (response) => {
-      const data = await response.json();
-      sendResponse(response.ok ? { data } : { error: data.error || `HTTP ${response.status}` });
-    }).catch((error) => sendResponse({ error: error.message })).finally(() => {
+
+    try {
+      const response = await fetch(localEndpoint, {
+        redirect: 'error',
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fen: message.payload?.fen, settings: engineSettings(message.payload?.settings), stream: true }),
+        signal: controller.signal
+      });
+      const contentType = response.headers.get('content-type') || '';
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        safePost({ type: 'error', error: data.error || `HTTP ${response.status}` });
+        return;
+      }
+      if (!contentType.includes('text/event-stream') || !response.body) {
+        const data = await response.json();
+        safePost({ type: 'chunk', payload: { type: 'final', result: data } });
+        return;
+      }
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const events = buffer.split('\n\n');
+        buffer = events.pop() || '';
+        for (const eventText of events) {
+          const line = eventText.split('\n').find((entry) => entry.startsWith('data: '));
+          if (!line) continue;
+          const payload = JSON.parse(line.slice(6));
+          safePost({ type: 'chunk', payload });
+        }
+      }
+    } catch (err) {
+      if (err?.name !== 'AbortError') safePost({ type: 'error', error: err.message });
+    } finally {
       clearTimeout(timer);
       if (requests.get(key) === request) requests.delete(key);
-    });
-    return true;
-  }
-  sendResponse({ error: 'Only the local PawnForge analysis endpoint is allowed.' });
-  return false;
+      if (activeRequest === request) activeRequest = null;
+    }
+  });
 });
 chrome.tabs.onRemoved.addListener((tabId) => {
   for (const channel of CHANNELS) {

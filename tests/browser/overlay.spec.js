@@ -724,3 +724,25 @@ test('piece scoring explains when the local server only returns position analysi
   await selectSquare(page, 'd7');
   await expect(page.locator('#pawnforge-piece-status')).toContainText('Update and restart the local PawnForge server');
 });
+
+test('streams progressive depth candidates before final analysis completes', async ({ page }) => {
+  await page.route('**/api/analyze/position', async (route) => {
+    const body = route.request().postDataJSON();
+    expect(body.stream).toBe(true);
+    const sse = [
+      `data: ${JSON.stringify({ type: 'partial', depth: 8, targetDepth: 16, result: { topMoves: [{ uci: 'e2e4', evalCp: 25, pv: 'e2e4 e7e5' }] } })}`,
+      `data: ${JSON.stringify({ type: 'final', result: { topMoves: [{ uci: 'd2d4', evalCp: 35, pv: 'd2d4 d7d5' }] } })}`
+    ].join('\n\n') + '\n\n';
+    await route.fulfill({
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream; charset=utf-8' },
+      body: sse
+    });
+  });
+  await page.setContent('<!doctype html><body></body>');
+  await injectOverlay(page);
+  await page.locator('#pawnforge-fen').fill('rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1');
+  await page.locator('#pawnforge-use-fen').click();
+  await expect(page.locator('#pawnforge-hud-candidates button').first()).toContainText('D2 ➜ D4');
+  await expect(page.locator('#pawnforge-hint')).toContainText('Source: manual FEN');
+});

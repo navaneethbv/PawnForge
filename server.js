@@ -1,5 +1,6 @@
 import { EngineWorker } from './engine-worker.js';
 import { DiskCache } from './disk-cache.js';
+import { Chess } from './vendor/chess.js';
 import {
   ENGINE_ELO_MAX, ENGINE_ELO_MIN, HttpError, START_FEN, chooseLosingMove, clampEval, classify,
   detectOpening, gameAccuracy, mapWithConcurrency, moveAccuracy, parsePgnMoves, parseScore, requireInteger, validateFen
@@ -145,18 +146,41 @@ class EnginePool {
     return w;
   }
 
+  // Picks a consistent worker for `fen` when idle so related searches (e.g. main analysis + piece
+  // move scores) reuse the same Stockfish transposition table; falls back to least-loaded worker.
+  workerForFen(fen) {
+    if (!this.enabled || this.workers.length === 0) {
+      throw new Error('Stockfish is not available. Set STOCKFISH_BIN or build engine/Stockfish.');
+    }
+    const key = String(fen || '').split(' ').slice(0, 2).join(' ');
+    let hash = 0;
+    for (let i = 0; i < key.length; i++) hash = ((hash * 31) + key.charCodeAt(i)) | 0;
+    const preferred = this.workers[Math.abs(hash) % this.workers.length];
+    const minPending = Math.min(...this.workers.map((w) => w.pending));
+    return preferred.pending <= minPending ? preferred : this.acquire();
+  }
+
   // `searchMoves` limits the search to those root moves (UCI "searchmoves"); each still gets its own line.
   // `worker` pins the search to one engine, so consecutive positions reuse its hash (game review).
-  async analyzePosition({ fen, depth = 12, multipv = 3, searchMoves = [], worker = null, signal }) {
+  // `onDepth(depth, partialResult)` fires as each intermediate depth (>= 6) completes when streaming.
+  async analyzePosition({ fen, depth = 12, multipv = 3, searchMoves = [], worker = null, signal, onDepth = null }) {
     if (!this.enabled) throw new Error('Stockfish is not available. Set STOCKFISH_BIN or build engine/Stockfish.');
     const key = `pos:${fen}:${depth}:${multipv}:${searchMoves.join(',')}`;
-    return cachedResult(key, () => (worker ?? this.acquire()).run(async (w) => {
+    return cachedResult(key, () => (worker ?? this.workerForFen(fen)).run(async (w) => {
       w.send(`setoption name MultiPV value ${multipv}`);
       w.send(`position fen ${fen}`);
       w.send(searchMoves.length ? `go depth ${depth} searchmoves ${searchMoves.join(' ')}` : `go depth ${depth}`);
 
-      const lines = [];
+      const topById = new Map();
       let checkmateScore = null;
+      let currentDepth = 0;
+      let lastEmittedDepth = 0;
+      const buildResult = () => {
+        const topMoves = [...topById.values()].sort((a, b) => a.rank - b.rank);
+        const bestEvalCp = topMoves.length > 0 ? topMoves[0].evalCp : (checkmateScore ?? 0);
+        return { fen, topMoves, bestEvalCp, source: 'stockfish' };
+      };
+
       while (true) {
         const line = await w.waitFor(() => true, 8000);
         if (line.startsWith('bestmove')) break;
@@ -164,22 +188,22 @@ class EnginePool {
         if (/ score mate 0\b/.test(line)) {
           checkmateScore = parseScore('mate', 0);
         }
-        if (line.includes(' pv ') && line.includes(' multipv ')) {
-          lines.push(line);
+        const m = line.match(/^info depth (\d+) .*?multipv (\d+).*?score (cp|mate) (-?\d+)( (?:lower|upper)bound)?.* pv (.+)$/);
+        if (!m) continue;
+        const lineDepth = Number(m[1]);
+        if (onDepth && currentDepth >= 6 && lineDepth > currentDepth && currentDepth > lastEmittedDepth && topById.size > 0) {
+          lastEmittedDepth = currentDepth;
+          onDepth(currentDepth, buildResult());
+        }
+        if (lineDepth > currentDepth) currentDepth = lineDepth;
+        // Keep exact scores; only store a bound if we have no score for this rank yet.
+        const mpv = Number(m[2]);
+        if (!m[5] || !topById.has(mpv)) {
+          topById.set(mpv, { rank: mpv, evalCp: parseScore(m[3], m[4]), pv: m[6], uci: m[6].split(' ')[0] });
         }
       }
 
-      const topById = new Map();
-      for (const line of lines) {
-        const m = line.match(/multipv (\d+).*score (cp|mate) (-?\d+).* pv (.+)$/);
-        if (!m) continue;
-        const mpv = Number(m[1]);
-        topById.set(mpv, { rank: mpv, evalCp: parseScore(m[2], m[3]), pv: m[4], uci: m[4].split(' ')[0] });
-      }
-
-      const topMoves = [...topById.values()].sort((a, b) => a.rank - b.rank);
-      const bestEvalCp = topMoves.length > 0 ? topMoves[0].evalCp : (checkmateScore ?? 0);
-      return { fen, topMoves, bestEvalCp, source: 'stockfish' };
+      return buildResult();
     }, signal));
   }
 
@@ -325,19 +349,48 @@ async function analyzePositionRequest(req, res, signal) {
   const fen = validateFen(body.fen);
   const depth = requireInteger(body.settings?.depth, { name: 'depth', defaultValue: 12, min: 1, max: 20 });
   if (body.settings?.square !== undefined) return sendJson(res, 200, await analyzePieceMoves(fen, body.settings.square, depth, signal));
-  const result = await pool.analyzePosition({
-    fen,
-    signal,
-    depth,
-    multipv: requireInteger(body.settings?.multiPv, { name: 'multiPv', defaultValue: 3, min: 1, max: 5 })
+  const multipv = requireInteger(body.settings?.multiPv, { name: 'multiPv', defaultValue: 3, min: 1, max: 5 });
+  if (body.stream !== true) {
+    return sendJson(res, 200, await pool.analyzePosition({ fen, signal, depth, multipv }));
+  }
+
+  res.writeHead(200, {
+    ...SECURITY_HEADERS,
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive'
   });
-  return sendJson(res, 200, result);
+  try {
+    const result = await pool.analyzePosition({
+      fen,
+      signal,
+      depth,
+      multipv,
+      onDepth: (completed, partialResult) => {
+        if (res.destroyed) return;
+        res.write(`data: ${JSON.stringify({ type: 'partial', depth: completed, targetDepth: depth, result: partialResult })}\n\n`);
+      }
+    });
+    if (res.destroyed) return undefined;
+    res.write(`data: ${JSON.stringify({ type: 'final', result })}\n\n`);
+    return res.end();
+  } catch (error) {
+    if (res.destroyed) return undefined;
+    res.write(`data: ${JSON.stringify({ type: 'error', error: error.message || 'Engine error.' })}\n\n`);
+    return res.end();
+  }
 }
 
 // Scores every legal move of the piece on `square` in one search: one MultiPV line per move.
+// Legal moves are generated locally via chess.js to avoid an extra Stockfish perft round-trip.
 async function analyzePieceMoves(fen, square, depth, signal) {
   if (typeof square !== 'string' || !/^[a-h][1-8]$/.test(square)) throw new HttpError(400, 'square must be a board square such as e2.');
-  const moves = (await pool.legalMoves(fen, signal)).filter((uci) => uci.startsWith(square));
+  let moves;
+  try {
+    moves = new Chess(fen).moves({ square, verbose: true }).map((m) => `${m.from}${m.to}${m.promotion || ''}`);
+  } catch {
+    moves = (await pool.legalMoves(fen, signal)).filter((uci) => uci.startsWith(square));
+  }
   if (moves.length === 0) return { fen, square, moves: [] };
   const { topMoves } = await pool.analyzePosition({ fen, depth, multipv: moves.length, searchMoves: moves, signal });
   return { fen, square, moves: topMoves.map(({ uci, evalCp, pv }) => ({ uci, evalCp, pv })) };
